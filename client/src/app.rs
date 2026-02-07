@@ -2,7 +2,7 @@ use std::{env, error::Error};
 
 use lib::{
     constants::DEFAULT_SERVER_PORT,
-    types::{
+    protocol::{
         AgentId, ClientId, HandshakeRequest, HandshakeResponse, read_json_frame, write_json_frame,
     },
 };

@@ -1,7 +1,7 @@
 use std::{env, error::Error, time::Duration};
 
 use lib::constants::DEFAULT_SERVER_PORT;
-use lib::types::{AgentId, HandshakeRequest, HandshakeResponse, read_json_frame, write_json_frame};
+use lib::protocol::{AgentId, HandshakeRequest, HandshakeResponse, read_json_frame, write_json_frame};
 use tokio::{io::AsyncReadExt, net::TcpStream, time::sleep};
 use tracing::{error, info};
 

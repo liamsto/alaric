@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, error::Error, time::Duration};
 
-use lib::types::{
+use lib::protocol::{
     AgentId, ClientId, HandshakeErrorCode, HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION,
     read_json_frame, write_json_frame,
 };

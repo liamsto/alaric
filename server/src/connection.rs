@@ -5,7 +5,7 @@ use crate::{
     responses::{send_accept, send_reject},
     state::ServerState,
 };
-use lib::types::{
+use lib::protocol::{
     AgentId, ClientId, HandshakeErrorCode, HandshakeRequest, PROTOCOL_VERSION, read_json_frame,
 };
 use tokio::{

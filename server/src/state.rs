@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use lib::types::{AgentId, SessionId};
+use lib::protocol::{AgentId, SessionId};
 use tokio::sync::{RwLock, mpsc::Sender};
 
 pub(crate) type AgentTx = Sender<Vec<u8>>;
