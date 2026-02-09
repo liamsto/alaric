@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! git diff --cached --name-only --diff-filter=ACMR | grep -Eq '\.rs$|Cargo\.toml$'; then
+  exit 0
+fi
+
+echo "Running cargo fmt..."
+cargo fmt --all
+
+if ! git diff --quiet; then
+  echo "Formatting changes were made. Review and stage them, then commit again."
+  exit 1
+fi
