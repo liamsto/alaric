@@ -3,11 +3,12 @@ use std::{env, error::Error};
 use lib::{
     constants::DEFAULT_SERVER_PORT,
     protocol::{
-        AgentId, ClientId, HandshakeRequest, HandshakeResponse, read_json_frame, write_json_frame,
+        AgentId, ClientId, HandshakeRequest, HandshakeResponse, SecureChannel, read_json_frame,
+        write_json_frame,
     },
+    security::noise::types::Keypair,
 };
 use tokio::{
-    io::AsyncWriteExt,
     net::TcpStream,
     time::{Duration, sleep},
 };
@@ -67,9 +68,18 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    let mut secure_channel = tokio::select! {
+        secure_result = SecureChannel::handshake_xx_initiator(&mut stream, Keypair::default()) => secure_result?,
+        _ = &mut shutdown => {
+            info!("shutdown signal received during Noise handshake, exiting");
+            return Ok(());
+        }
+    };
+    info!("Noise XX transport established");
+
     loop {
         tokio::select! {
-            write_result = stream.write_all(b"Hello world!") => {
+            write_result = secure_channel.send(&mut stream, b"Hello world!") => {
                 write_result?;
             }
             _ = &mut shutdown => {

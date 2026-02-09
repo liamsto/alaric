@@ -2,9 +2,10 @@ use std::{env, error::Error, time::Duration};
 
 use lib::constants::DEFAULT_SERVER_PORT;
 use lib::protocol::{
-    AgentId, HandshakeRequest, HandshakeResponse, read_json_frame, write_json_frame,
+    AgentId, HandshakeRequest, HandshakeResponse, SecureChannel, read_json_frame, write_json_frame,
 };
-use tokio::{io::AsyncReadExt, net::TcpStream, time::sleep};
+use lib::security::noise::types::Keypair;
+use tokio::{net::TcpStream, time::sleep};
 use tracing::{error, info};
 
 use crate::signal;
@@ -82,12 +83,12 @@ async fn connection_loop(
         }
     }
 
-    let mut buf = [0u8; 4096];
+    let mut secure_channel =
+        SecureChannel::handshake_xx_responder(&mut stream, Keypair::default()).await?;
+    info!("Noise XX transport established");
+
     loop {
-        let n = stream.read(&mut buf).await?;
-        if n == 0 {
-            return Ok(());
-        }
-        info!("bytes received: {}", str::from_utf8(&buf[..n])?);
+        let plaintext = secure_channel.recv(&mut stream).await?;
+        info!("bytes received: {}", str::from_utf8(&plaintext)?);
     }
 }

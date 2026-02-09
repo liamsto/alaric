@@ -2,10 +2,10 @@ use std::{collections::BTreeMap, error::Error, time::Duration};
 
 use lib::protocol::{
     AgentId, ClientId, HandshakeErrorCode, HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION,
-    read_json_frame, write_json_frame,
+    SecureChannel, read_json_frame, write_json_frame,
 };
+use lib::security::noise::types::Keypair;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     task::JoinHandle,
     time::timeout,
@@ -36,6 +36,23 @@ async fn accepts_handshake_and_routes_payload() -> Result<(), Box<dyn Error>> {
     )
     .await??;
     assert!(matches!(agent_response, HandshakeResponse::Accepted(_)));
+    let agent_task = tokio::spawn(async move {
+        let mut agent_secure =
+            SecureChannel::handshake_xx_responder(&mut agent, Keypair::default())
+                .await
+                .expect("agent Noise XX handshake should succeed");
+
+        let received = agent_secure
+            .recv(&mut agent)
+            .await
+            .expect("agent should receive encrypted client payload");
+        assert_eq!(received, b"hello-agent");
+
+        agent_secure
+            .send(&mut agent, b"hello-client")
+            .await
+            .expect("agent should send encrypted response");
+    });
 
     let mut client = TcpStream::connect(addr).await?;
     write_json_frame(
@@ -49,16 +66,21 @@ async fn accepts_handshake_and_routes_payload() -> Result<(), Box<dyn Error>> {
     )
     .await??;
     assert!(matches!(client_response, HandshakeResponse::Accepted(_)));
+    let mut client_secure = timeout(
+        Duration::from_secs(2),
+        SecureChannel::handshake_xx_initiator(&mut client, Keypair::default()),
+    )
+    .await??;
 
     let payload = b"hello-agent";
-    client.write_all(payload).await?;
+    client_secure.send(&mut client, payload).await?;
 
-    let mut received = vec![0u8; payload.len()];
-    timeout(Duration::from_secs(2), agent.read_exact(&mut received)).await??;
-    assert_eq!(received, payload);
+    let response = timeout(Duration::from_secs(2), client_secure.recv(&mut client)).await??;
+    assert_eq!(response, b"hello-client");
+
+    timeout(Duration::from_secs(2), agent_task).await??;
 
     drop(client);
-    drop(agent);
     server_task.abort();
     let _ = server_task.await;
 
