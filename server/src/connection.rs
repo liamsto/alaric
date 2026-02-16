@@ -9,9 +9,9 @@ use lib::protocol::{
     AgentId, ClientId, HandshakeErrorCode, HandshakeRequest, PROTOCOL_VERSION, read_json_frame,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, copy_bidirectional},
     net::TcpStream,
-    sync::mpsc::channel,
+    sync::oneshot,
 };
 use tracing::{info, warn};
 
@@ -66,7 +66,7 @@ async fn handle_agent(
     peer: SocketAddr,
     agent_id: AgentId,
 ) -> Result<(), BoxError> {
-    let (tx, mut rx) = channel::<Vec<u8>>(128);
+    let (tx, mut rx) = oneshot::channel::<TcpStream>();
     {
         let mut registry = state.agents.write().await;
         if registry.contains_key(&agent_id) {
@@ -90,16 +90,62 @@ async fn handle_agent(
         state.agents.write().await.remove(&agent_id);
         return Err(Box::new(err));
     }
-
     info!(
-        "agent connected: {} (agent_id={}, session_id={})",
+        "agent connected: {} (agent_id={}, session_id={}); waiting for client",
         peer, agent_id, session_id.0
     );
 
-    while let Some(bytes) = rx.recv().await {
-        if let Err(err) = stream.write_all(&bytes).await {
-            warn!("agent {} stream closed: {}", agent_id, err);
-            break;
+    let mut probe = [0u8; 1];
+    let mut client_stream = tokio::select! {
+        matched = &mut rx => {
+            match matched {
+                Ok(client_stream) => client_stream,
+                Err(_) => {
+                    state.agents.write().await.remove(&agent_id);
+                    info!(
+                        "agent {} from {} disconnected before client pairing",
+                        agent_id, peer
+                    );
+                    return Ok(());
+                }
+            }
+        }
+        read_result = stream.read(&mut probe) => {
+            match read_result {
+                Ok(0) => {
+                    info!(
+                        "agent {} from {} disconnected before client pairing",
+                        agent_id, peer
+                    );
+                }
+                Ok(_) => {
+                    warn!(
+                        "agent {} from {} sent data before client pairing; closing connection",
+                        agent_id, peer
+                    );
+                }
+                Err(err) => {
+                    warn!(
+                        "error while waiting for agent {} from {}: {}",
+                        agent_id, peer, err
+                    );
+                }
+            }
+            state.agents.write().await.remove(&agent_id);
+            return Ok(());
+        }
+    };
+
+    info!("paired client tunnel with agent {} from {}", agent_id, peer);
+    match copy_bidirectional(&mut stream, &mut client_stream).await {
+        Ok((agent_to_client, client_to_agent)) => {
+            info!(
+                "tunnel closed for agent {}: {} bytes agent->client, {} bytes client->agent",
+                agent_id, agent_to_client, client_to_agent
+            );
+        }
+        Err(err) => {
+            warn!("tunnel I/O error for agent {}: {}", agent_id, err);
         }
     }
 
@@ -115,7 +161,7 @@ async fn handle_client(
     client_id: ClientId,
     target_agent_id: AgentId,
 ) -> Result<(), BoxError> {
-    if !state.agents.read().await.contains_key(&target_agent_id) {
+    let Some(agent_waiter) = state.agents.write().await.remove(&target_agent_id) else {
         send_reject(
             &mut stream,
             HandshakeErrorCode::AgentUnavailable,
@@ -127,40 +173,30 @@ async fn handle_client(
             client_id, peer, target_agent_id
         );
         return Ok(());
-    }
+    };
 
     let session_id = state.next_session_id();
-    send_accept(&mut stream, session_id).await?;
+    if let Err(err) = send_accept(&mut stream, session_id).await {
+        state
+            .agents
+            .write()
+            .await
+            .insert(target_agent_id.clone(), agent_waiter);
+        return Err(Box::new(err));
+    }
+
     info!(
         "client connected: {} (client_id={}, target_agent_id={}, session_id={})",
         peer, client_id, target_agent_id, session_id.0
     );
 
-    let mut buf = [0u8; 4096];
-    loop {
-        let n = stream.read(&mut buf).await?;
-        if n == 0 {
-            info!(
-                "client disconnected: {} (client_id={}, target_agent_id={})",
-                peer, client_id, target_agent_id
-            );
-            return Ok(());
-        }
-
-        let Some(agent_tx) = state.agents.read().await.get(&target_agent_id).cloned() else {
-            warn!(
-                "dropping {} bytes from client {}: target agent {} unavailable",
-                n, client_id, target_agent_id
-            );
-            continue;
-        };
-
-        if agent_tx.send(buf[..n].to_vec()).await.is_err() {
-            warn!(
-                "dropping {} bytes from client {}: target agent {} channel closed",
-                n, client_id, target_agent_id
-            );
-            state.agents.write().await.remove(&target_agent_id);
-        }
+    if let Err(stream) = agent_waiter.send(stream) {
+        drop(stream);
+        warn!(
+            "failed to pair client {} from {} with agent {}: agent no longer waiting",
+            client_id, peer, target_agent_id
+        );
     }
+
+    Ok(())
 }

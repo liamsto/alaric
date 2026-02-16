@@ -1,13 +1,21 @@
 mod framing;
 mod handshake;
 mod ids;
+mod secure;
 
-pub use framing::{MAX_FRAME_BYTES, ProtocolError, read_json_frame, write_json_frame};
+pub use framing::{
+    MAX_FRAME_BYTES, ProtocolError, read_bytes_frame, read_json_frame, write_bytes_frame,
+    write_json_frame,
+};
 pub use handshake::{
     AuthRequest, HandshakeAccepted, HandshakeErrorCode, HandshakeRejected, HandshakeRequest,
     HandshakeResponse, PROTOCOL_VERSION, Role,
 };
 pub use ids::{AgentId, ClientId, IdError, SessionId};
+pub use secure::{
+    NOISE_HANDSHAKE_MSG_A_LEN, NOISE_HANDSHAKE_MSG_B_LEN, NOISE_HANDSHAKE_MSG_C_LEN,
+    NOISE_PROLOGUE, SecureChannel, SecureChannelError,
+};
 
 #[cfg(test)]
 mod tests {

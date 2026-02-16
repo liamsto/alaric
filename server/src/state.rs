@@ -7,10 +7,13 @@ use std::{
 };
 
 use lib::protocol::{AgentId, SessionId};
-use tokio::sync::{RwLock, mpsc::Sender};
+use tokio::{
+    net::TcpStream,
+    sync::{RwLock, oneshot},
+};
 
-pub(crate) type AgentTx = Sender<Vec<u8>>;
-pub(crate) type AgentRegistry = Arc<RwLock<HashMap<AgentId, AgentTx>>>;
+pub(crate) type AgentWaiter = oneshot::Sender<TcpStream>;
+pub(crate) type AgentRegistry = Arc<RwLock<HashMap<AgentId, AgentWaiter>>>;
 
 #[derive(Clone)]
 pub(crate) struct ServerState {
