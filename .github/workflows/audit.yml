@@ -13,6 +13,7 @@ on:
 permissions:
   contents: read
   checks: write
+  issues: write
 
 jobs:
   audit:
@@ -24,3 +25,5 @@ jobs:
 
       - name: Run RustSec audit
         uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
