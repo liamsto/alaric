@@ -2,11 +2,13 @@ use std::error::Error;
 
 use std::{env, time::Duration};
 
+use alaric_agent::{policy::Policy, session::run_secure_session};
 use lib::constants::DEFAULT_SERVER_PORT;
 use lib::protocol::{
     AgentId, HandshakeRequest, HandshakeResponse, read_json_frame, write_json_frame,
 };
-use tokio::{io::AsyncReadExt, net::TcpStream, time::sleep};
+use lib::security::noise::types::Keypair;
+use tokio::{net::TcpStream, time::sleep};
 use tracing::{error, info};
 
 mod signal;
@@ -19,6 +21,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let addr = format!("127.0.0.1:{}", DEFAULT_SERVER_PORT);
     let agent_id = AgentId::new(env::var("AGENT_ID").unwrap_or_else(|_| "agent-default".into()))?;
+    let policy_path =
+        env::var("AGENT_POLICY_PATH").unwrap_or_else(|_| "./agent-policy.json".to_string());
+    let policy = Policy::load_from_path(&policy_path)?;
+    info!("loaded policy from {}", policy_path);
 
     loop {
         let connect_result = tokio::select! {
@@ -32,7 +38,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         match connect_result {
             Ok(stream) => {
                 tokio::select! {
-                    result = connection_loop(stream, agent_id.clone()) => {
+                    result = connection_loop(stream, agent_id.clone(), &policy) => {
                         if let Err(err) = result {
                             error!("connection error: {}", err);
                         }
@@ -63,6 +69,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 async fn connection_loop(
     mut stream: TcpStream,
     agent_id: AgentId,
+    policy: &Policy,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     info!("connected to {}", stream.peer_addr()?);
     let request = HandshakeRequest::agent(agent_id.clone());
@@ -86,12 +93,6 @@ async fn connection_loop(
         }
     }
 
-    let mut buf = [0u8; 4096];
-    loop {
-        let n = stream.read(&mut buf).await?;
-        if n == 0 {
-            return Ok(());
-        }
-        info!("bytes received: {}", str::from_utf8(&buf[..n])?);
-    }
+    run_secure_session(&mut stream, policy, Keypair::default()).await?;
+    Ok(())
 }
