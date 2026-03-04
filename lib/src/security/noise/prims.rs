@@ -37,7 +37,7 @@ pub(crate) fn hash(data: &[u8]) -> [u8; HASHLEN] {
     let mut context = Blake2s::new(HASHLEN);
     context.update(data);
     let hash = context.finalize();
-    from_slice_hashlen(&hash.as_bytes()[..])
+    from_slice_hashlen(hash.as_bytes())
 }
 
 pub(crate) fn hash_with_context(con: &[u8], data: &[u8]) -> [u8; HASHLEN] {
@@ -45,7 +45,7 @@ pub(crate) fn hash_with_context(con: &[u8], data: &[u8]) -> [u8; HASHLEN] {
     context.update(con);
     context.update(data);
     let hash = context.finalize();
-    from_slice_hashlen(&hash.as_bytes()[..])
+    from_slice_hashlen(hash.as_bytes())
 }
 
 pub(crate) fn hmac(key: &[u8], data: &[u8], out: &mut [u8]) {

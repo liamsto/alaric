@@ -91,7 +91,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let mut secure = tokio::select! {
-        secure_result = SecureChannel::handshake_xx_initiator(&mut stream, Keypair::default()) => secure_result?,
+        secure_result = SecureChannel::handshake_xx_initiator(&mut stream, Keypair::default_keypair()) => secure_result?,
         _ = &mut shutdown => {
             info!("shutdown signal received before secure handshake, exiting");
             return Ok(());

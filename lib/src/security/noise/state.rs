@@ -136,17 +136,16 @@ impl SymmetricState {
     }
 
     pub fn initialize_symmetric(protocol_name: &[u8]) -> Self {
-        let h: Hash;
-        match protocol_name.len() {
+        let h = match protocol_name.len() {
             0..=31 => {
                 let mut temp = [0u8; HASHLEN];
                 let (protocol_name_len, _) = temp.split_at_mut(protocol_name.len());
                 protocol_name_len.copy_from_slice(protocol_name);
-                h = Hash::from_bytes(from_slice_hashlen(&temp[..]));
+                Hash::from_bytes(from_slice_hashlen(&temp[..]))
             }
-            32 => h = Hash::from_bytes(from_slice_hashlen(protocol_name)),
-            _ => h = Hash::from_bytes(hash(protocol_name)),
-        }
+            32 => Hash::from_bytes(from_slice_hashlen(protocol_name)),
+            _ => Hash::from_bytes(hash(protocol_name)),
+        };
         let ck: Hash = Hash::from_bytes(from_slice_hashlen(&h.as_bytes()[..]));
         let cs: CipherState = CipherState::new();
         Self { cs, ck, h }
@@ -306,7 +305,7 @@ impl HandshakeState {
             return Err(NoiseError::MissingneError);
         }
         if self.e.is_empty() {
-            self.e = Keypair::default();
+            self.e = Keypair::default_keypair();
         }
         let (ne, in_out) = in_out.split_at_mut(DHLEN);
         ne.copy_from_slice(&self.e.get_public_key().as_bytes()[..]);
@@ -321,7 +320,7 @@ impl HandshakeState {
             return Err(NoiseError::MissingneError);
         }
         if self.e.is_empty() {
-            self.e = Keypair::default();
+            self.e = Keypair::default_keypair();
         }
         let (ne, in_out) = in_out.split_at_mut(DHLEN);
         ne.copy_from_slice(&self.e.get_public_key().as_bytes()[..]);

@@ -26,7 +26,6 @@ use super::{
 ///   local or remote party.
 /// - `is_transport`: `bool` value that indicates whether a handshake has been
 ///   performed succesfully with a remote session and the session is in transport mode.
-
 pub struct NoiseSession {
     hs: HandshakeState,
     h: Hash,
@@ -104,11 +103,10 @@ impl NoiseSession {
     /// - `initiator`: `bool` variable. To be set as `true` when initiating a handshake with a remote party, or `false` otherwise.
     /// - `prologue`: `Message` object. Could optionally contain the name of the protocol to be used.
     /// - `s`: `Keypair` object. Contains local party's static keypair.
-
     pub fn init_session(initiator: bool, prologue: &[u8], s: Keypair) -> NoiseSession {
         if initiator {
             NoiseSession {
-                hs: HandshakeState::initialize_initiator(prologue, s, Psk::default()),
+                hs: HandshakeState::initialize_initiator(prologue, s, Psk::default_psk()),
                 mc: 0,
                 i: initiator,
                 cs1: CipherState::new(),
@@ -118,7 +116,7 @@ impl NoiseSession {
             }
         } else {
             NoiseSession {
-                hs: HandshakeState::initialize_responder(prologue, s, Psk::default()),
+                hs: HandshakeState::initialize_responder(prologue, s, Psk::default_psk()),
                 mc: 0,
                 i: initiator,
                 cs1: CipherState::new(),

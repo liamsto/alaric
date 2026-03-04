@@ -67,7 +67,7 @@ async fn connect_client_secure(
 
     let secure = timeout(
         Duration::from_secs(2),
-        SecureChannel::handshake_xx_initiator(&mut client, Keypair::default()),
+        SecureChannel::handshake_xx_initiator(&mut client, Keypair::default_keypair()),
     )
     .await??;
     Ok((client, secure))
@@ -150,7 +150,7 @@ async fn allows_command_and_streams_output() -> Result<(), Box<dyn Error>> {
     let policy = base_policy();
 
     let agent_task = tokio::spawn(async move {
-        run_secure_session(&mut agent_stream, &policy, Keypair::default())
+        run_secure_session(&mut agent_stream, &policy, Keypair::default_keypair())
             .await
             .expect("agent secure session should succeed");
     });
@@ -205,7 +205,7 @@ async fn rejects_unknown_command() -> Result<(), Box<dyn Error>> {
     let mut agent_stream = connect_agent(addr, "agent-unknown").await?;
     let policy = base_policy();
     let agent_task = tokio::spawn(async move {
-        run_secure_session(&mut agent_stream, &policy, Keypair::default())
+        run_secure_session(&mut agent_stream, &policy, Keypair::default_keypair())
             .await
             .expect("agent secure session should succeed");
     });
@@ -245,7 +245,7 @@ async fn rejects_invalid_argument_value() -> Result<(), Box<dyn Error>> {
     let mut agent_stream = connect_agent(addr, "agent-invalid-arg").await?;
     let policy = base_policy();
     let agent_task = tokio::spawn(async move {
-        run_secure_session(&mut agent_stream, &policy, Keypair::default())
+        run_secure_session(&mut agent_stream, &policy, Keypair::default_keypair())
             .await
             .expect("agent secure session should succeed");
     });
@@ -287,7 +287,7 @@ async fn times_out_long_running_command() -> Result<(), Box<dyn Error>> {
     let mut agent_stream = connect_agent(addr, "agent-timeout").await?;
     let policy = base_policy();
     let agent_task = tokio::spawn(async move {
-        run_secure_session(&mut agent_stream, &policy, Keypair::default())
+        run_secure_session(&mut agent_stream, &policy, Keypair::default_keypair())
             .await
             .expect("agent secure session should succeed");
     });
@@ -333,7 +333,7 @@ async fn truncates_output_at_limit() -> Result<(), Box<dyn Error>> {
     let mut agent_stream = connect_agent(addr, "agent-truncate").await?;
     let policy = base_policy();
     let agent_task = tokio::spawn(async move {
-        run_secure_session(&mut agent_stream, &policy, Keypair::default())
+        run_secure_session(&mut agent_stream, &policy, Keypair::default_keypair())
             .await
             .expect("agent secure session should succeed");
     });

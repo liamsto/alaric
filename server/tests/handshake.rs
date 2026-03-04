@@ -38,7 +38,7 @@ async fn accepts_handshake_and_routes_payload() -> Result<(), Box<dyn Error>> {
     assert!(matches!(agent_response, HandshakeResponse::Accepted(_)));
     let agent_task = tokio::spawn(async move {
         let mut agent_secure =
-            SecureChannel::handshake_xx_responder(&mut agent, Keypair::default())
+            SecureChannel::handshake_xx_responder(&mut agent, Keypair::default_keypair())
                 .await
                 .expect("agent Noise XX handshake should succeed");
 
@@ -68,7 +68,7 @@ async fn accepts_handshake_and_routes_payload() -> Result<(), Box<dyn Error>> {
     assert!(matches!(client_response, HandshakeResponse::Accepted(_)));
     let mut client_secure = timeout(
         Duration::from_secs(2),
-        SecureChannel::handshake_xx_initiator(&mut client, Keypair::default()),
+        SecureChannel::handshake_xx_initiator(&mut client, Keypair::default_keypair()),
     )
     .await??;
 

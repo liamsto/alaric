@@ -17,10 +17,10 @@ fn decode_str_32(s: &str) -> Result<[u8; DHLEN], NoiseError> {
             temp.copy_from_slice(&x[..]);
             Ok(temp)
         } else {
-            return Err(NoiseError::InvalidInputError);
+            Err(NoiseError::InvalidInputError)
         }
     } else {
-        return Err(NoiseError::InvalidInputError);
+        Err(NoiseError::InvalidInputError)
     }
 }
 
@@ -125,7 +125,7 @@ pub struct Psk {
 }
 impl Psk {
     /// Instanciates a new empty `Psk`.
-    pub fn default() -> Self {
+    pub fn default_psk() -> Self {
         Self::from_bytes(EMPTY_KEY)
     }
     pub(crate) fn clear(&mut self) {
@@ -151,7 +151,7 @@ impl Psk {
     /// # use std::str::FromStr;
     /// # fn try_main() -> Result<(), NoiseError> {
     ///     let empty_key1 = Psk::from_str("0000000000000000000000000000000000000000000000000000000000000000")?;
-    ///     let empty_key2 = Psk::default();
+    ///     let empty_key2 = Psk::default_psk();
     ///     let k = Psk::from_str("4a3acbfdb163dec651dfa3194dece676d437029c62a408b4c5ea9114246e4893")?;
     ///     assert!(empty_key1.is_empty());
     ///     assert!(empty_key2.is_empty());
@@ -195,7 +195,7 @@ impl std::str::FromStr for Psk {
     /// ```
     fn from_str(k: &str) -> Result<Self, NoiseError> {
         let psk = decode_str_32(k)?;
-        if psk.len() > 32 {}
+        let _ = psk.len();
         Ok(Self::from_bytes(psk))
     }
 }
@@ -398,7 +398,7 @@ impl Keypair {
     }
     /// Instanciates a `Keypair` by generating a random `PrivateKey` and deriving
     /// the corresponding `PublicKey`.
-    pub fn default() -> Self {
+    pub fn default_keypair() -> Self {
         let secret_bytes: [u8; DHLEN] = rand::random();
         let secret = curve25519::SecretKey(secret_bytes);
         let public = secret.get_public();

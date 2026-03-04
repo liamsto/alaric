@@ -83,16 +83,15 @@ async fn connection_loop(
             );
         }
         HandshakeResponse::Rejected(rejected) => {
+            let rejected_code = format!("{:?}", rejected.code);
             return Err(format!(
                 "handshake rejected for agent {} ({}): {}",
-                agent_id,
-                format!("{:?}", rejected.code),
-                rejected.message
+                agent_id, rejected_code, rejected.message
             )
             .into());
         }
     }
 
-    run_secure_session(&mut stream, policy, Keypair::default()).await?;
+    run_secure_session(&mut stream, policy, Keypair::default_keypair()).await?;
     Ok(())
 }

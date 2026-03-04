@@ -186,8 +186,8 @@ where
                 let n = read_result?;
                 if n == 0 {
                     stdout_done = true;
-                } else if !timed_out {
-                    if stream_output(
+                } else if !timed_out
+                    && stream_output(
                         channel,
                         stream,
                         request_id,
@@ -198,14 +198,13 @@ where
                     ).await? {
                         truncated = true;
                     }
-                }
             }
             read_result = stderr.read(&mut stderr_buf), if !stderr_done => {
                 let n = read_result?;
                 if n == 0 {
                     stderr_done = true;
-                } else if !timed_out {
-                    if stream_output(
+                } else if !timed_out
+                    && stream_output(
                         channel,
                         stream,
                         request_id,
@@ -216,7 +215,6 @@ where
                     ).await? {
                         truncated = true;
                     }
-                }
             }
             _ = sleep(sleep_for), if status.is_none() && !timed_out => {
                 timed_out = true;
