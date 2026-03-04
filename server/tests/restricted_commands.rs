@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, error::Error, time::Duration};
+use std::{collections::BTreeMap, error::Error, net::SocketAddr, time::Duration};
 
 use alaric_agent::{
     policy::{ArgSpec, CommandSpec, Policy, ValidationRule},
@@ -18,7 +18,7 @@ use tokio::{
     time::timeout,
 };
 
-async fn spawn_server() -> Result<(std::net::SocketAddr, JoinHandle<()>), Box<dyn Error>> {
+async fn spawn_server() -> Result<(SocketAddr, JoinHandle<()>), Box<dyn Error>> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     let task = tokio::spawn(async move {
@@ -47,7 +47,7 @@ async fn connect_agent(
 }
 
 async fn connect_client_secure(
-    addr: std::net::SocketAddr,
+    addr: SocketAddr,
     client_id: &str,
     target_agent_id: &str,
 ) -> Result<(TcpStream, SecureChannel), Box<dyn Error>> {

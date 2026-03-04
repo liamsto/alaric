@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::{collections::BTreeMap, error::Error, time::Duration};
 
 use lib::protocol::{
@@ -11,7 +12,7 @@ use tokio::{
     time::timeout,
 };
 
-async fn spawn_server() -> Result<(std::net::SocketAddr, JoinHandle<()>), Box<dyn Error>> {
+async fn spawn_server() -> Result<(SocketAddr, JoinHandle<()>), Box<dyn Error>> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     let task = tokio::spawn(async move {

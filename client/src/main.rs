@@ -14,7 +14,7 @@ use lib::{
     },
     security::noise::types::Keypair,
 };
-use tokio::net::TcpStream;
+use tokio::{net::TcpStream, select};
 use tracing::info;
 
 mod signal;
@@ -90,7 +90,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let mut secure = tokio::select! {
+    let mut secure = select! {
         secure_result = SecureChannel::handshake_xx_initiator(&mut stream, Keypair::default_keypair()) => secure_result?,
         _ = &mut shutdown => {
             info!("shutdown signal received before secure handshake, exiting");
@@ -104,7 +104,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         command_id: cli.command_id,
         args: cli.args,
     };
-    tokio::select! {
+    select! {
         send_result = send_secure_json(&mut secure, &mut stream, &execute) => send_result?,
         _ = &mut shutdown => {
             info!("shutdown signal received before execute request, exiting");
@@ -113,7 +113,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     loop {
-        let message = tokio::select! {
+        let message = select! {
             message_result = recv_secure_json::<_, AgentMessage>(&mut secure, &mut stream) => message_result?,
             _ = &mut shutdown => {
                 info!("shutdown signal received while waiting for command output, exiting");

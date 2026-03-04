@@ -1,6 +1,6 @@
 use std::{error::Error, fmt};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 const MIN_ID_LEN: usize = 3;
 const MAX_ID_LEN: usize = 64;
@@ -86,7 +86,7 @@ impl Serialize for AgentId {
 impl<'de> Deserialize<'de> for AgentId {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::Deserializer<'de>,
+        D: Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
         AgentId::new(value).map_err(serde::de::Error::custom)
