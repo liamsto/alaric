@@ -151,6 +151,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     "command completed (request_id={}, exit_code={}, timed_out={}, truncated={})",
                     request_id, exit_code, timed_out, truncated
                 );
+                if let Some(failure_message) =
+                    completion_failure_message(exit_code, timed_out, truncated)
+                {
+                    return Err(format!(
+                        "command failed (request_id={}): {}",
+                        request_id, failure_message
+                    )
+                    .into());
+                }
                 break;
             }
             AgentMessage::Rejected {
@@ -229,4 +238,49 @@ Environment:
   CLIENT_ID          Optional client id (default: client-<pid>)
   TARGET_AGENT_ID    Optional target agent id (default: agent-default)
   COMMAND_ID         Optional fallback for --command-id"
+}
+
+fn completion_failure_message(exit_code: i32, timed_out: bool, truncated: bool) -> Option<String> {
+    let mut reasons = Vec::new();
+    if exit_code != 0 {
+        reasons.push(format!("exit_code={}", exit_code));
+    }
+    if timed_out {
+        reasons.push("timed_out=true".to_string());
+    }
+    if truncated {
+        reasons.push("truncated=true".to_string());
+    }
+
+    if reasons.is_empty() {
+        None
+    } else {
+        Some(reasons.join(", "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::completion_failure_message;
+
+    #[test]
+    fn completion_success_has_no_failure_message() {
+        assert_eq!(completion_failure_message(0, false, false), None);
+    }
+
+    #[test]
+    fn non_zero_exit_reports_failure() {
+        assert_eq!(
+            completion_failure_message(2, false, false),
+            Some("exit_code=2".to_string())
+        );
+    }
+
+    #[test]
+    fn timeout_and_truncation_are_reported() {
+        assert_eq!(
+            completion_failure_message(0, true, true),
+            Some("timed_out=true, truncated=true".to_string())
+        );
+    }
 }
