@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "default_timeout_secs": 5,
+  "max_output_bytes": 32768,
+  "commands": [
+    {
+      "id": "echo_text",
+      "program": "/bin/echo",
+      "fixed_args": [],
+      "arg_specs": [
+        {
+          "name": "text",
+          "required": true,
+          "validation": {
+            "type": "regex",
+            "pattern": ".+"
+          }
+        }
+      ]
+    },
+    {
+      "id": "list_dir",
+      "program": "/bin/ls",
+      "fixed_args": [
+        "-1"
+      ],
+      "arg_specs": [
+        {
+          "name": "path",
+          "required": true,
+          "validation": {
+            "type": "regex",
+            "pattern": "[A-Za-z0-9._/\\-]+"
+          }
+        }
+      ]
+    }
+  ]
+}
