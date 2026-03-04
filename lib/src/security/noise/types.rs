@@ -396,13 +396,15 @@ impl Keypair {
             public_key: PublicKey::empty(),
         }
     }
-    /// Instanciates a `Keypair` by generating a `PrivateKey` from random values using `thread_rng()`, then deriving the corresponding `PublicKey`
+    /// Instanciates a `Keypair` by generating a random `PrivateKey` and deriving
+    /// the corresponding `PublicKey`.
     pub fn default() -> Self {
-        let hacl_keypair: (curve25519::SecretKey, curve25519::PublicKey) =
-            curve25519::keypair(rand::thread_rng());
+        let secret_bytes: [u8; DHLEN] = rand::random();
+        let secret = curve25519::SecretKey(secret_bytes);
+        let public = secret.get_public();
         Self {
-            private_key: PrivateKey::from_hacl_secret_key(hacl_keypair.0),
-            public_key: PublicKey::from_hacl_public_key(hacl_keypair.1),
+            private_key: PrivateKey::from_hacl_secret_key(secret),
+            public_key: PublicKey::from_hacl_public_key(public),
         }
     }
     pub(crate) fn dh(&self, public_key: &[u8; DHLEN]) -> [u8; DHLEN] {
