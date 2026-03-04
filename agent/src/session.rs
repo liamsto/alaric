@@ -1,6 +1,6 @@
 use std::{error::Error, fmt};
 
-use lib::{
+use alaric_lib::{
     protocol::{
         ClientMessage, CommandProtocolError, SecureChannel, SecureChannelError, recv_secure_json,
     },

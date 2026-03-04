@@ -4,7 +4,8 @@ edition = "2024"
 [workspace]
 members = [
     "agent",
-    "client", "lib",
+    "client", 
+    "lib",
     "server",
 ]
 

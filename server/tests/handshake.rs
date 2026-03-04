@@ -1,11 +1,11 @@
 use std::net::SocketAddr;
 use std::{collections::BTreeMap, error::Error, time::Duration};
 
-use lib::protocol::{
+use alaric_lib::protocol::{
     AgentId, ClientId, HandshakeErrorCode, HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION,
     SecureChannel, read_json_frame, write_json_frame,
 };
-use lib::security::noise::types::Keypair;
+use alaric_lib::security::noise::types::Keypair;
 use tokio::{
     net::{TcpListener, TcpStream},
     task::JoinHandle,

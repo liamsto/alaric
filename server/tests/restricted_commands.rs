@@ -4,7 +4,7 @@ use alaric_agent::{
     policy::{ArgSpec, CommandSpec, Policy, ValidationRule},
     session::run_secure_session,
 };
-use lib::{
+use alaric_lib::{
     protocol::{
         AgentId, AgentMessage, ClientId, ClientMessage, HandshakeRequest, HandshakeResponse,
         OutputStream, RejectionCode, SecureChannel, read_json_frame, recv_secure_json,

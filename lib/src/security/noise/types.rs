@@ -66,7 +66,7 @@ impl Key {
     /// # Example
     ///
     /// ```
-    /// # use lib::{
+    /// # use alaric_lib::{
     /// #   security::noise::error::NoiseError,
     /// #   security::noise::types::Key,
     /// # };
@@ -101,7 +101,7 @@ impl std::str::FromStr for Key {
     /// # Example
     ///
     /// ```
-    /// # use lib::{
+    /// # use alaric_lib::{
     /// #   security::noise::error::NoiseError,
     /// #   security::noise::types::Key,
     /// # };
@@ -144,7 +144,7 @@ impl Psk {
     /// # Example
     ///
     /// ```
-    /// # use lib::{
+    /// # use alaric_lib::{
     /// #   security::noise::error::NoiseError,
     /// #   security::noise::types::Psk,
     /// # };
@@ -180,7 +180,7 @@ impl std::str::FromStr for Psk {
     /// # Example
     ///
     /// ```
-    /// # use lib::{
+    /// # use alaric_lib::{
     /// #   security::noise::error::NoiseError,
     /// #   security::noise::types::Psk,
     /// # };
@@ -225,7 +225,7 @@ impl PrivateKey {
     /// # Example
     ///
     /// ```
-    /// # use lib::{
+    /// # use alaric_lib::{
     /// #   security::noise::error::NoiseError,
     /// #   security::noise::types::PrivateKey,
     /// # };
@@ -263,7 +263,7 @@ impl std::str::FromStr for PrivateKey {
     /// # Example
     ///
     /// ```
-    /// # use lib::{
+    /// # use alaric_lib::{
     /// #   security::noise::error::NoiseError,
     /// #   security::noise::types::PrivateKey,
     /// # };
@@ -314,7 +314,7 @@ impl PublicKey {
     /// # Example
     ///
     /// ```
-    /// # use lib::{
+    /// # use alaric_lib::{
     /// #   security::noise::error::NoiseError,
     /// #   security::noise::types::PublicKey,
     /// # };
@@ -341,7 +341,7 @@ impl std::str::FromStr for PublicKey {
     /// # Example
     ///
     /// ```
-    /// # use lib::{
+    /// # use alaric_lib::{
     /// #   security::noise::error::NoiseError,
     /// #   security::noise::types::PublicKey,
     /// # };

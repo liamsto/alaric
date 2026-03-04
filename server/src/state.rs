@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use lib::protocol::{AgentId, SessionId};
+use alaric_lib::protocol::{AgentId, SessionId};
 use tokio::{
     net::TcpStream,
     sync::{RwLock, oneshot},

@@ -5,7 +5,7 @@ use std::{
     io::{self, Write},
 };
 
-use lib::{
+use alaric_lib::{
     constants::DEFAULT_SERVER_PORT,
     protocol::{
         AgentId, AgentMessage, ClientId, ClientMessage, HandshakeRequest, HandshakeResponse,

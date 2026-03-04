@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use lib::constants::DEFAULT_SERVER_PORT;
+use alaric_lib::constants::DEFAULT_SERVER_PORT;
 use tokio::net::TcpListener;
 
 mod signal;

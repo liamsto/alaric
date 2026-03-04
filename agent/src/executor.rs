@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use lib::protocol::{
+use alaric_lib::protocol::{
     AgentMessage, CommandProtocolError, OutputStream, RejectionCode, RequestId, SecureChannel,
     send_secure_json,
 };

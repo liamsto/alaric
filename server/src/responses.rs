@@ -1,4 +1,4 @@
-use lib::protocol::{
+use alaric_lib::protocol::{
     HandshakeAccepted, HandshakeErrorCode, HandshakeRejected, HandshakeResponse, PROTOCOL_VERSION,
     ProtocolError, SessionId, write_json_frame,
 };

@@ -3,11 +3,11 @@ use std::error::Error;
 use std::{env, time::Duration};
 
 use alaric_agent::{policy::Policy, session::run_secure_session};
-use lib::constants::DEFAULT_SERVER_PORT;
-use lib::protocol::{
+use alaric_lib::constants::DEFAULT_SERVER_PORT;
+use alaric_lib::protocol::{
     AgentId, HandshakeRequest, HandshakeResponse, read_json_frame, write_json_frame,
 };
-use lib::security::noise::types::Keypair;
+use alaric_lib::security::noise::types::Keypair;
 use tokio::{net::TcpStream, time::sleep};
 use tracing::{error, info};
 
