@@ -1,8 +1,13 @@
+mod commands;
 mod framing;
 mod handshake;
 mod ids;
 mod secure;
 
+pub use commands::{
+    AgentMessage, ClientMessage, CommandProtocolError, OutputStream, RejectionCode, RequestId,
+    recv_secure_json, send_secure_json,
+};
 pub use framing::{
     MAX_FRAME_BYTES, ProtocolError, read_bytes_frame, read_json_frame, write_bytes_frame,
     write_json_frame,
