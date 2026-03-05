@@ -5,7 +5,8 @@ use std::{env, time::Duration};
 use alaric_agent::{policy::Policy, session::run_secure_session};
 use alaric_lib::constants::DEFAULT_SERVER_PORT;
 use alaric_lib::protocol::{
-    AgentId, AuthRequest, HandshakeRequest, HandshakeResponse, read_json_frame, write_json_frame,
+    AgentId, HandshakeProofRequest, HandshakeRequest, HandshakeResponse, build_auth_proof_ed25519,
+    read_json_frame, write_json_frame,
 };
 use alaric_lib::security::noise::types::Keypair;
 use tokio::{net::TcpStream, time::sleep};
@@ -21,8 +22,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let addr = format!("127.0.0.1:{}", DEFAULT_SERVER_PORT);
     let agent_id = AgentId::new(env::var("AGENT_ID").unwrap_or_else(|_| "agent-default".into()))?;
-    let auth_token = env::var("AGENT_AUTH_TOKEN")
-        .map_err(|_| "AGENT_AUTH_TOKEN must be set for handshake authentication")?;
+    let auth_key_id = env::var("AGENT_AUTH_KEY_ID")
+        .map_err(|_| "AGENT_AUTH_KEY_ID must be set for handshake authentication")?;
+    let auth_private_key = env::var("AGENT_AUTH_PRIVATE_KEY")
+        .map_err(|_| "AGENT_AUTH_PRIVATE_KEY must be set for handshake authentication")?;
     let policy_path =
         env::var("AGENT_POLICY_PATH").unwrap_or_else(|_| "./agent-policy.json".to_string());
     let policy = Policy::load(&policy_path)?;
@@ -40,7 +43,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         match connect_result {
             Ok(stream) => {
                 tokio::select! {
-                    result = connection_loop(stream, agent_id.clone(), &auth_token, &policy) => {
+                    result = connection_loop(
+                        stream,
+                        agent_id.clone(),
+                        &auth_key_id,
+                        &auth_private_key,
+                        &policy,
+                    ) => {
                         if let Err(err) = result {
                             error!("connection error: {}", err);
                         }
@@ -71,13 +80,36 @@ async fn main() -> Result<(), Box<dyn Error>> {
 async fn connection_loop(
     mut stream: TcpStream,
     agent_id: AgentId,
-    auth_token: &str,
+    auth_key_id: &str,
+    auth_private_key: &str,
     policy: &Policy,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     info!("connected to {}", stream.peer_addr()?);
-    let request =
-        HandshakeRequest::agent(agent_id.clone()).with_auth(AuthRequest::shared_token(auth_token));
+    let request = HandshakeRequest::agent(agent_id.clone());
     write_json_frame(&mut stream, &request).await?;
+
+    let challenge = match read_json_frame::<_, HandshakeResponse>(&mut stream).await? {
+        HandshakeResponse::Challenge(challenge) => challenge,
+        HandshakeResponse::Rejected(rejected) => {
+            let rejected_code = format!("{:?}", rejected.code);
+            return Err(format!(
+                "handshake rejected for agent {} ({}): {}",
+                agent_id, rejected_code, rejected.message
+            )
+            .into());
+        }
+        HandshakeResponse::Accepted(accepted) => {
+            info!(
+                "handshake accepted (agent_id={}, session_id={})",
+                agent_id, accepted.session_id.0
+            );
+            run_secure_session(&mut stream, policy, Keypair::default_keypair()).await?;
+            return Ok(());
+        }
+    };
+
+    let proof = build_auth_proof_ed25519(&request, &challenge, auth_key_id, auth_private_key)?;
+    write_json_frame(&mut stream, &HandshakeProofRequest::new(proof)).await?;
 
     match read_json_frame::<_, HandshakeResponse>(&mut stream).await? {
         HandshakeResponse::Accepted(accepted) => {
@@ -94,7 +126,10 @@ async fn connection_loop(
             )
             .into());
         }
-    }
+        HandshakeResponse::Challenge(_) => {
+            return Err("unexpected second handshake challenge from server".into());
+        }
+    };
 
     run_secure_session(&mut stream, policy, Keypair::default_keypair()).await?;
     Ok(())

@@ -4,14 +4,21 @@ use std::{
     error::Error,
     fmt, fs, io,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
-use alaric_lib::protocol::{AUTH_METHOD_SHARED_TOKEN_V1, AgentId, ClientId, HandshakeRequest};
+use alaric_lib::protocol::{
+    AUTH_METHOD_ED25519_CHALLENGE_V1, AgentId, ClientId, HandshakeChallenge, HandshakeProofRequest,
+    HandshakeRequest, PROTOCOL_VERSION, decode_ed25519_public_key, verify_auth_proof_ed25519,
+};
+use rand::random;
 use serde::Deserialize;
+use tokio::sync::Mutex;
 
-const AUTH_CONFIG_VERSION_V1: u16 = 1;
+const AUTH_CONFIG_VERSION_V2: u16 = 2;
 const AUTH_CONFIG_PATH_ENV: &str = "SERVER_AUTH_CONFIG_PATH";
 const DEFAULT_AUTH_CONFIG_PATH: &str = "./server-auth.json";
+const CHALLENGE_TTL_SECS: u64 = 30;
 
 #[derive(Debug)]
 pub enum HandshakeAuthError {
@@ -57,18 +64,31 @@ impl fmt::Display for HandshakeAuthError {
 impl Error for HandshakeAuthError {}
 
 #[derive(Debug, Clone)]
+pub struct IdentityPublicKey {
+    pub key_id: String,
+    pub public_key: [u8; 32],
+}
+
+#[derive(Debug)]
 pub struct HandshakeAuthenticator {
-    agent_tokens: HashMap<AgentId, String>,
-    client_tokens: HashMap<ClientId, String>,
+    agent_keys: HashMap<AgentId, IdentityPublicKey>,
+    client_keys: HashMap<ClientId, IdentityPublicKey>,
+    issued_challenges: Mutex<HashMap<String, u64>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct AuthConfigFile {
     version: u16,
     #[serde(default)]
-    agents: HashMap<String, String>,
+    agents: HashMap<String, AuthConfigIdentity>,
     #[serde(default)]
-    clients: HashMap<String, String>,
+    clients: HashMap<String, AuthConfigIdentity>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthConfigIdentity {
+    key_id: String,
+    public_key: String,
 }
 
 impl HandshakeAuthenticator {
@@ -79,35 +99,41 @@ impl HandshakeAuthenticator {
     }
 
     pub fn new(
-        agent_tokens: HashMap<AgentId, String>,
-        client_tokens: HashMap<ClientId, String>,
+        agent_keys: HashMap<AgentId, IdentityPublicKey>,
+        client_keys: HashMap<ClientId, IdentityPublicKey>,
     ) -> Result<Self, HandshakeAuthError> {
-        if agent_tokens.is_empty() {
+        if agent_keys.is_empty() {
             return Err(HandshakeAuthError::Invalid(
                 "at least one authorized agent is required".to_string(),
             ));
         }
-        if client_tokens.is_empty() {
+        if client_keys.is_empty() {
             return Err(HandshakeAuthError::Invalid(
                 "at least one authorized client is required".to_string(),
             ));
         }
 
-        if agent_tokens.values().any(|token| token.is_empty()) {
-            return Err(HandshakeAuthError::Invalid(
-                "agent auth token must not be empty".to_string(),
-            ));
+        for (agent_id, key) in &agent_keys {
+            if key.key_id.trim().is_empty() {
+                return Err(HandshakeAuthError::Invalid(format!(
+                    "agent '{}' has an empty key_id",
+                    agent_id
+                )));
+            }
         }
-
-        if client_tokens.values().any(|token| token.is_empty()) {
-            return Err(HandshakeAuthError::Invalid(
-                "client auth token must not be empty".to_string(),
-            ));
+        for (client_id, key) in &client_keys {
+            if key.key_id.trim().is_empty() {
+                return Err(HandshakeAuthError::Invalid(format!(
+                    "client '{}' has an empty key_id",
+                    client_id
+                )));
+            }
         }
 
         Ok(Self {
-            agent_tokens,
-            client_tokens,
+            agent_keys,
+            client_keys,
+            issued_challenges: Mutex::new(HashMap::new()),
         })
     }
 
@@ -124,99 +150,197 @@ impl HandshakeAuthenticator {
                 source,
             })?;
 
-        if config.version != AUTH_CONFIG_VERSION_V1 {
+        if config.version != AUTH_CONFIG_VERSION_V2 {
             return Err(HandshakeAuthError::Invalid(format!(
                 "unsupported auth config version {}; expected {}",
-                config.version, AUTH_CONFIG_VERSION_V1
+                config.version, AUTH_CONFIG_VERSION_V2
             )));
         }
 
-        let mut agent_tokens = HashMap::new();
-        for (id, token) in config.agents {
+        let mut agent_keys = HashMap::new();
+        for (id, config_identity) in config.agents {
             let agent_id = AgentId::new(id).map_err(|err| {
                 HandshakeAuthError::Invalid(format!("invalid authorized agent id: {}", err))
             })?;
-            if token.is_empty() {
-                return Err(HandshakeAuthError::Invalid(
-                    "agent auth token must not be empty".to_string(),
-                ));
-            }
-            agent_tokens.insert(agent_id, token);
+            let public_key =
+                decode_ed25519_public_key(&config_identity.public_key).map_err(|err| {
+                    HandshakeAuthError::Invalid(format!(
+                        "agent '{}' has invalid public_key: {}",
+                        agent_id, err
+                    ))
+                })?;
+            agent_keys.insert(
+                agent_id,
+                IdentityPublicKey {
+                    key_id: config_identity.key_id,
+                    public_key,
+                },
+            );
         }
 
-        let mut client_tokens = HashMap::new();
-        for (id, token) in config.clients {
+        let mut client_keys = HashMap::new();
+        for (id, config_identity) in config.clients {
             let client_id = ClientId::new(id).map_err(|err| {
                 HandshakeAuthError::Invalid(format!("invalid authorized client id: {}", err))
             })?;
-            if token.is_empty() {
-                return Err(HandshakeAuthError::Invalid(
-                    "client auth token must not be empty".to_string(),
-                ));
-            }
-            client_tokens.insert(client_id, token);
+            let public_key =
+                decode_ed25519_public_key(&config_identity.public_key).map_err(|err| {
+                    HandshakeAuthError::Invalid(format!(
+                        "client '{}' has invalid public_key: {}",
+                        client_id, err
+                    ))
+                })?;
+            client_keys.insert(
+                client_id,
+                IdentityPublicKey {
+                    key_id: config_identity.key_id,
+                    public_key,
+                },
+            );
         }
 
-        Self::new(agent_tokens, client_tokens)
+        Self::new(agent_keys, client_keys)
     }
 
-    pub fn authenticate(&self, request: &HandshakeRequest) -> Result<(), HandshakeAuthError> {
-        let auth = request.auth().ok_or_else(|| {
-            HandshakeAuthError::Unauthorized("missing handshake authentication payload".to_string())
-        })?;
+    pub async fn issue_challenge(
+        &self,
+        request: &HandshakeRequest,
+    ) -> Result<HandshakeChallenge, HandshakeAuthError> {
+        let _ = self.identity_key_for_request(request)?;
+        let now_unix = current_unix_timestamp()?;
+        let expires_at_unix = now_unix
+            .checked_add(CHALLENGE_TTL_SECS)
+            .ok_or_else(|| HandshakeAuthError::Invalid("challenge expiry overflow".to_string()))?;
+        let nonce = hex::encode(random::<[u8; 32]>());
 
-        if auth.method != AUTH_METHOD_SHARED_TOKEN_V1 {
+        let mut issued = self.issued_challenges.lock().await;
+        prune_expired(&mut issued, now_unix);
+        issued.insert(nonce.clone(), expires_at_unix);
+
+        Ok(HandshakeChallenge::ed25519(nonce, expires_at_unix))
+    }
+
+    pub async fn authenticate(
+        &self,
+        request: &HandshakeRequest,
+        challenge: &HandshakeChallenge,
+        proof_request: &HandshakeProofRequest,
+    ) -> Result<(), HandshakeAuthError> {
+        let now_unix = current_unix_timestamp()?;
+        if proof_request.protocol_version != PROTOCOL_VERSION {
             return Err(HandshakeAuthError::Unauthorized(format!(
-                "unsupported authentication method '{}'",
-                auth.method
+                "proof protocol version mismatch; expected {}, got {}",
+                PROTOCOL_VERSION, proof_request.protocol_version
             )));
         }
 
-        match request {
-            HandshakeRequest::Agent { agent_id, .. } => {
-                let Some(expected_token) = self.agent_tokens.get(agent_id) else {
-                    return Err(HandshakeAuthError::Unauthorized(format!(
-                        "agent '{}' is not authorized",
-                        agent_id
-                    )));
-                };
+        if challenge.protocol_version != PROTOCOL_VERSION {
+            return Err(HandshakeAuthError::Unauthorized(format!(
+                "challenge protocol version mismatch; expected {}, got {}",
+                PROTOCOL_VERSION, challenge.protocol_version
+            )));
+        }
 
-                if !constant_time_token_eq(auth.token.as_bytes(), expected_token.as_bytes()) {
-                    return Err(HandshakeAuthError::Unauthorized(format!(
-                        "authentication failed for agent '{}'",
-                        agent_id
-                    )));
-                }
-            }
-            HandshakeRequest::Client { client_id, .. } => {
-                let Some(expected_token) = self.client_tokens.get(client_id) else {
-                    return Err(HandshakeAuthError::Unauthorized(format!(
-                        "client '{}' is not authorized",
-                        client_id
-                    )));
-                };
+        if challenge.method != AUTH_METHOD_ED25519_CHALLENGE_V1 {
+            return Err(HandshakeAuthError::Unauthorized(format!(
+                "unsupported challenge method '{}'",
+                challenge.method
+            )));
+        }
 
-                if !constant_time_token_eq(auth.token.as_bytes(), expected_token.as_bytes()) {
-                    return Err(HandshakeAuthError::Unauthorized(format!(
-                        "authentication failed for client '{}'",
-                        client_id
-                    )));
-                }
-            }
+        if proof_request.proof.method != challenge.method {
+            return Err(HandshakeAuthError::Unauthorized(format!(
+                "proof method '{}' does not match challenge method '{}'",
+                proof_request.proof.method, challenge.method
+            )));
+        }
+
+        if now_unix > challenge.expires_at_unix {
+            return Err(HandshakeAuthError::Unauthorized(
+                "challenge has expired".to_string(),
+            ));
+        }
+
+        self.consume_challenge(&challenge.nonce, now_unix).await?;
+
+        let trusted_key = self.identity_key_for_request(request)?;
+        let verified = verify_auth_proof_ed25519(
+            request,
+            challenge,
+            &proof_request.proof,
+            &trusted_key.key_id,
+            trusted_key.public_key,
+        )
+        .map_err(|err| {
+            HandshakeAuthError::Unauthorized(format!("failed to verify auth proof: {}", err))
+        })?;
+
+        if !verified {
+            return Err(HandshakeAuthError::Unauthorized(
+                "signature verification failed".to_string(),
+            ));
         }
 
         Ok(())
     }
+
+    fn identity_key_for_request(
+        &self,
+        request: &HandshakeRequest,
+    ) -> Result<&IdentityPublicKey, HandshakeAuthError> {
+        match request {
+            HandshakeRequest::Agent { agent_id, .. } => {
+                self.agent_keys.get(agent_id).ok_or_else(|| {
+                    HandshakeAuthError::Unauthorized(format!(
+                        "agent '{}' is not authorized",
+                        agent_id
+                    ))
+                })
+            }
+            HandshakeRequest::Client { client_id, .. } => {
+                self.client_keys.get(client_id).ok_or_else(|| {
+                    HandshakeAuthError::Unauthorized(format!(
+                        "client '{}' is not authorized",
+                        client_id
+                    ))
+                })
+            }
+        }
+    }
+
+    async fn consume_challenge(
+        &self,
+        nonce: &str,
+        now_unix: u64,
+    ) -> Result<(), HandshakeAuthError> {
+        let mut issued = self.issued_challenges.lock().await;
+        prune_expired(&mut issued, now_unix);
+        let Some(expires_at_unix) = issued.remove(nonce) else {
+            return Err(HandshakeAuthError::Unauthorized(
+                "challenge nonce is unknown or already consumed".to_string(),
+            ));
+        };
+        if now_unix > expires_at_unix {
+            return Err(HandshakeAuthError::Unauthorized(
+                "challenge has expired".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
-fn constant_time_token_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
+fn current_unix_timestamp() -> Result<u64, HandshakeAuthError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|source| {
+            HandshakeAuthError::Invalid(format!(
+                "system clock is set before unix epoch: {}",
+                source
+            ))
+        })
+}
 
-    let mut diff = 0u8;
-    for (left_byte, right_byte) in left.iter().zip(right.iter()) {
-        diff |= left_byte ^ right_byte;
-    }
-    diff == 0
+fn prune_expired(issued: &mut HashMap<String, u64>, now_unix: u64) {
+    issued.retain(|_, expires_at_unix| *expires_at_unix >= now_unix);
 }

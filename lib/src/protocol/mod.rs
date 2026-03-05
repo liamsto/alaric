@@ -13,8 +13,10 @@ pub use framing::{
     write_json_frame,
 };
 pub use handshake::{
-    AUTH_METHOD_SHARED_TOKEN_V1, AuthRequest, HandshakeAccepted, HandshakeErrorCode,
-    HandshakeRejected, HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION, Role,
+    AUTH_METHOD_ED25519_CHALLENGE_V1, AuthCryptoError, AuthProof, HandshakeAccepted,
+    HandshakeChallenge, HandshakeErrorCode, HandshakeProofRequest, HandshakeRejected,
+    HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION, Role, build_auth_proof_ed25519,
+    decode_ed25519_public_key, verify_auth_proof_ed25519,
 };
 pub use ids::{AgentId, ClientId, IdError, SessionId};
 pub use secure::{
