@@ -1,51 +1,70 @@
-# A basic remote command runner
+# A simple remote command runner
 
-This project is a small exploration of a secure system for running a limited set of remote
-commands over an end-to-end encrypted channel. It uses a relay server for pairing and byte
-forwarding, while the client and agent perform a Noise XX handshake and exchange encrypted command
-messages directly.
+This project is a small exploration of a secure system for running a limited set of remote commands over an end-to-end encrypted channel. It uses a relay server for pairing and byte forwarding, while the client and agent perform a Noise XX handshake and exchange encrypted command messages directly.
 
-## Current MVP capabilities
-
-- Relay handshake and tunnel pairing (`server`)
-- Client/agent Noise transport setup over the relay tunnel
-- Restricted command execution with an agent-local policy file
-- Strict argument validation (regex and enum rules)
+## Current capabilities
+- Relay handshake and tunnel pairing
+- Handshake authentication with per-id Ed25519 keys (server stores public keys only)
+- Noise transport setup over the relay tunnel
+- Restricted command execution with a signed policy bundle
+- Argument validation (regex and enum rules)
 - Streaming `stdout`/`stderr` output events
 - Final completion event with exit code, timeout flag, and truncation flag
 
-## Restricted command policy
+## Policy bundle format
+The agent loads a signed policy bundle from `AGENT_POLICY_PATH` (default: `./agent-policy.json`)
+and trusted Ed25519 verification keys from `AGENT_POLICY_KEYS_PATH` (default: `./policy-keys.json`).
+For examples of the aforementioned files, see [policy-keys.example.json](policy-keys.example.json) and [agent-policy.example.json](agent-policy.example.json)
 
-The agent loads policy JSON from `AGENT_POLICY_PATH` (default: `./agent-policy.json`) and fails
-fast on invalid policy.
+Bundle schema:
+- `SignedPolicyBundle { bundle_version, expires_at_unix, policy, signature }`
+- `PolicySignature { key_id, algorithm, value }` where `algorithm` is `ed25519` and `value` is hex
 
-Schema:
-
+Embedded policy schema:
 - `Policy { version, default_timeout_secs, max_output_bytes, commands }`
 - `CommandSpec { id, program, fixed_args, arg_specs, timeout_secs?, max_output_bytes? }`
 - `ArgSpec { name, required, validation? }`
 - `ValidationRule::Regex { pattern } | ValidationRule::Enum { values }`
 
-Example policy is included at `agent-policy.json`.
+Unsigned bundles, unknown `key_id`s, invalid signatures, unsupported bundle versions, and any expired bundles are rejected during load.
 
-## Running locally
+## Running a simple local test
 
-1. Start the relay server:
+1. Create local runtime config files and per-machine auth keys:
+
+```bash
+cp agent-policy.example.json agent-policy.json
+cp policy-keys.example.json policy-keys.json
+
+# Writes ./server-auth.json and prints shell exports with private keys.
+cargo run -q -p alaric-lib --example gen_auth_config -- ./server-auth.json > .dev-auth.env
+```
+
+2. Start the relay server:
 
 ```bash
 cargo run -p alaric-server
 ```
 
-2. Start the agent in a second terminal:
+3. Start the agent in a second terminal:
 
 ```bash
-AGENT_ID=agent-default AGENT_POLICY_PATH=./agent-policy.json cargo run -p alaric-agent
+source ./.dev-auth.env
+
+AGENT_ID=agent-default \
+AGENT_POLICY_PATH=./agent-policy.json \
+AGENT_POLICY_KEYS_PATH=./policy-keys.json \
+cargo run -p alaric-agent
 ```
 
-3. Run a client command in a third terminal:
+4. Run a client command in a third terminal:
 
 ```bash
-TARGET_AGENT_ID=agent-default cargo run -p alaric-client -- \
+source ./.dev-auth.env
+
+CLIENT_ID=client-local \
+TARGET_AGENT_ID=agent-default \
+cargo run -p alaric-client -- \
   --command-id echo_text \
   --arg text=hello
 ```
@@ -58,9 +77,11 @@ alaric-client --command-id <id> [--arg name=value]...
 
 Notes:
 
-- One command is processed per session in this MVP.
-- The server does not inspect command messages; policy enforcement is agent-local.
-- Signed policy bundles and handshake-level authentication are not implemented yet.
+- One command is processed per session currently.
+- The server does not inspect command messages and is generally blind to traffic, policy enforcement is handled by the agent.
+- Handshake auth uses server-issued nonce challenges and Ed25519 signatures over handshake context.
+- Handshake auth config is read from `SERVER_AUTH_CONFIG_PATH` (default: `./server-auth.json`). See [server-auth.example.json](server-auth.example.json) for schema and default ids.
+- Generated local files `server-auth.json` and `.dev-auth.env` are gitignored by default.
 
 ## Development hooks
 

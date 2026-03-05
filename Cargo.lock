@@ -16,6 +16,8 @@ name = "alaric-agent"
 version = "0.1.0"
 dependencies = [
  "alaric-lib",
+ "hacl-star",
+ "hex",
  "regex",
  "serde",
  "serde_json",
@@ -55,6 +57,10 @@ version = "0.1.0"
 dependencies = [
  "alaric-agent",
  "alaric-lib",
+ "hex",
+ "rand",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

@@ -2,11 +2,12 @@ use std::net::SocketAddr;
 
 use crate::{
     error::BoxError,
-    responses::{send_accept, send_reject},
+    responses::{send_accept, send_challenge, send_reject},
     state::ServerState,
 };
 use alaric_lib::protocol::{
-    AgentId, ClientId, HandshakeErrorCode, HandshakeRequest, PROTOCOL_VERSION, read_json_frame,
+    AgentId, ClientId, HandshakeErrorCode, HandshakeProofRequest, HandshakeRequest,
+    PROTOCOL_VERSION, read_json_frame,
 };
 use tokio::{
     io::{AsyncReadExt, copy_bidirectional},
@@ -45,6 +46,51 @@ pub(crate) async fn handle_connection(
             ),
         )
         .await?;
+        return Ok(());
+    }
+
+    let challenge = match state.authenticator.issue_challenge(&request).await {
+        Ok(challenge) => challenge,
+        Err(err) => {
+            send_reject(
+                &mut stream,
+                HandshakeErrorCode::Unauthorized,
+                format!("handshake authentication failed: {}", err),
+            )
+            .await?;
+            warn!("rejected unauthorized handshake from {}: {}", peer, err);
+            return Ok(());
+        }
+    };
+
+    send_challenge(&mut stream, challenge.clone()).await?;
+
+    let proof_request = match read_json_frame::<_, HandshakeProofRequest>(&mut stream).await {
+        Ok(proof_request) => proof_request,
+        Err(err) => {
+            send_reject(
+                &mut stream,
+                HandshakeErrorCode::InvalidRequest,
+                format!("invalid auth proof request: {}", err),
+            )
+            .await?;
+            warn!("invalid auth proof request from {}: {}", peer, err);
+            return Ok(());
+        }
+    };
+
+    if let Err(err) = state
+        .authenticator
+        .authenticate(&request, &challenge, &proof_request)
+        .await
+    {
+        send_reject(
+            &mut stream,
+            HandshakeErrorCode::Unauthorized,
+            format!("handshake authentication failed: {}", err),
+        )
+        .await?;
+        warn!("rejected unauthorized handshake from {}: {}", peer, err);
         return Ok(());
     }
 

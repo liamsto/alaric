@@ -1,0 +1,33 @@
+{
+  "bundle_version": 1,
+  "expires_at_unix": 4102444800,
+  "policy": {
+    "version": 1,
+    "default_timeout_secs": 5,
+    "max_output_bytes": 2048,
+    "commands": [
+      {
+        "id": "echo_text",
+        "program": "/bin/echo",
+        "fixed_args": [],
+        "arg_specs": [
+          {
+            "name": "text",
+            "required": true,
+            "validation": {
+              "type": "regex",
+              "pattern": ".+"
+            }
+          }
+        ],
+        "timeout_secs": null,
+        "max_output_bytes": null
+      }
+    ]
+  },
+  "signature": {
+    "key_id": "control-plane-v1",
+    "algorithm": "ed25519",
+    "value": "0eb95a16305c302acf9af240ee24c87d1a296949f5c27f40064ed0827f3454fa05eeb95273a030db04a817a6bd015534b17de3a094156e28e89c77f95e976f0f"
+  }
+}

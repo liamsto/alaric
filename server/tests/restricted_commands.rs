@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, error::Error, net::SocketAddr, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    error::Error,
+    net::SocketAddr,
+    time::Duration,
+};
 
 use alaric_agent::{
     policy::{ArgSpec, CommandSpec, Policy, ValidationRule},
@@ -6,23 +11,70 @@ use alaric_agent::{
 };
 use alaric_lib::{
     protocol::{
-        AgentId, AgentMessage, ClientId, ClientMessage, HandshakeRequest, HandshakeResponse,
-        OutputStream, RejectionCode, SecureChannel, read_json_frame, recv_secure_json,
-        send_secure_json, write_json_frame,
+        AgentId, AgentMessage, ClientId, ClientMessage, HandshakeProofRequest, HandshakeRequest,
+        HandshakeResponse, OutputStream, RejectionCode, SecureChannel, build_auth_proof_ed25519,
+        decode_ed25519_public_key, read_json_frame, recv_secure_json, send_secure_json,
+        write_json_frame,
     },
     security::noise::types::Keypair,
 };
+use alaric_server::{HandshakeAuthenticator, IdentityPublicKey};
 use tokio::{
     net::{TcpListener, TcpStream},
     task::JoinHandle,
     time::timeout,
 };
 
-async fn spawn_server() -> Result<(SocketAddr, JoinHandle<()>), Box<dyn Error>> {
+const AGENT_KEY_ID: &str = "agent-default-v1";
+const CLIENT_KEY_ID: &str = "client-local-v1";
+const AGENT_PRIVATE_KEY_HEX: &str =
+    "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+const AGENT_PUBLIC_KEY_HEX: &str =
+    "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+const CLIENT_PRIVATE_KEY_HEX: &str =
+    "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb";
+const CLIENT_PUBLIC_KEY_HEX: &str =
+    "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c";
+
+fn test_authenticator(
+    agent_ids: &[&str],
+    client_ids: &[&str],
+) -> Result<HandshakeAuthenticator, Box<dyn Error>> {
+    let agent_public_key = decode_ed25519_public_key(AGENT_PUBLIC_KEY_HEX)?;
+    let client_public_key = decode_ed25519_public_key(CLIENT_PUBLIC_KEY_HEX)?;
+
+    let mut agents = HashMap::new();
+    for agent_id in agent_ids {
+        agents.insert(
+            AgentId::new(*agent_id)?,
+            IdentityPublicKey {
+                key_id: AGENT_KEY_ID.to_string(),
+                public_key: agent_public_key,
+            },
+        );
+    }
+
+    let mut clients = HashMap::new();
+    for client_id in client_ids {
+        clients.insert(
+            ClientId::new(*client_id)?,
+            IdentityPublicKey {
+                key_id: CLIENT_KEY_ID.to_string(),
+                public_key: client_public_key,
+            },
+        );
+    }
+
+    Ok(HandshakeAuthenticator::new(agents, clients)?)
+}
+
+async fn spawn_server(
+    authenticator: HandshakeAuthenticator,
+) -> Result<(SocketAddr, JoinHandle<()>), Box<dyn Error>> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     let task = tokio::spawn(async move {
-        let _ = alaric_server::run(listener).await;
+        let _ = alaric_server::run_with_auth(listener, authenticator).await;
     });
     Ok((addr, task))
 }
@@ -32,17 +84,25 @@ async fn connect_agent(
     agent_id: &str,
 ) -> Result<TcpStream, Box<dyn Error>> {
     let mut agent = TcpStream::connect(addr).await?;
-    write_json_frame(
-        &mut agent,
-        &HandshakeRequest::agent(AgentId::new(agent_id)?),
-    )
-    .await?;
+    let request = HandshakeRequest::agent(AgentId::new(agent_id)?);
+    write_json_frame(&mut agent, &request).await?;
     let response = timeout(
         Duration::from_secs(2),
         read_json_frame::<_, HandshakeResponse>(&mut agent),
     )
     .await??;
-    assert!(matches!(response, HandshakeResponse::Accepted(_)));
+    let HandshakeResponse::Challenge(challenge) = response else {
+        panic!("expected handshake challenge");
+    };
+    let proof =
+        build_auth_proof_ed25519(&request, &challenge, AGENT_KEY_ID, AGENT_PRIVATE_KEY_HEX)?;
+    write_json_frame(&mut agent, &HandshakeProofRequest::new(proof)).await?;
+    let final_response = timeout(
+        Duration::from_secs(2),
+        read_json_frame::<_, HandshakeResponse>(&mut agent),
+    )
+    .await??;
+    assert!(matches!(final_response, HandshakeResponse::Accepted(_)));
     Ok(agent)
 }
 
@@ -52,18 +112,28 @@ async fn connect_client_secure(
     target_agent_id: &str,
 ) -> Result<(TcpStream, SecureChannel), Box<dyn Error>> {
     let mut client = TcpStream::connect(addr).await?;
-    write_json_frame(
-        &mut client,
-        &HandshakeRequest::client(ClientId::new(client_id)?, AgentId::new(target_agent_id)?),
-    )
-    .await?;
+    let request =
+        HandshakeRequest::client(ClientId::new(client_id)?, AgentId::new(target_agent_id)?);
+    write_json_frame(&mut client, &request).await?;
 
     let response = timeout(
         Duration::from_secs(2),
         read_json_frame::<_, HandshakeResponse>(&mut client),
     )
     .await??;
-    assert!(matches!(response, HandshakeResponse::Accepted(_)));
+    let HandshakeResponse::Challenge(challenge) = response else {
+        panic!("expected handshake challenge");
+    };
+    let proof =
+        build_auth_proof_ed25519(&request, &challenge, CLIENT_KEY_ID, CLIENT_PRIVATE_KEY_HEX)?;
+    write_json_frame(&mut client, &HandshakeProofRequest::new(proof)).await?;
+
+    let final_response = timeout(
+        Duration::from_secs(2),
+        read_json_frame::<_, HandshakeResponse>(&mut client),
+    )
+    .await??;
+    assert!(matches!(final_response, HandshakeResponse::Accepted(_)));
 
     let secure = timeout(
         Duration::from_secs(2),
@@ -145,7 +215,8 @@ fn base_policy() -> Policy {
 
 #[tokio::test]
 async fn allows_command_and_streams_output() -> Result<(), Box<dyn Error>> {
-    let (addr, server_task) = spawn_server().await?;
+    let (addr, server_task) =
+        spawn_server(test_authenticator(&["agent-cmd-ok"], &["client-cmd-ok"])?).await?;
     let mut agent_stream = connect_agent(addr, "agent-cmd-ok").await?;
     let policy = base_policy();
 
@@ -201,7 +272,8 @@ async fn allows_command_and_streams_output() -> Result<(), Box<dyn Error>> {
 
 #[tokio::test]
 async fn rejects_unknown_command() -> Result<(), Box<dyn Error>> {
-    let (addr, server_task) = spawn_server().await?;
+    let (addr, server_task) =
+        spawn_server(test_authenticator(&["agent-unknown"], &["client-unknown"])?).await?;
     let mut agent_stream = connect_agent(addr, "agent-unknown").await?;
     let policy = base_policy();
     let agent_task = tokio::spawn(async move {
@@ -241,7 +313,11 @@ async fn rejects_unknown_command() -> Result<(), Box<dyn Error>> {
 
 #[tokio::test]
 async fn rejects_invalid_argument_value() -> Result<(), Box<dyn Error>> {
-    let (addr, server_task) = spawn_server().await?;
+    let (addr, server_task) = spawn_server(test_authenticator(
+        &["agent-invalid-arg"],
+        &["client-invalid-arg"],
+    )?)
+    .await?;
     let mut agent_stream = connect_agent(addr, "agent-invalid-arg").await?;
     let policy = base_policy();
     let agent_task = tokio::spawn(async move {
@@ -283,7 +359,8 @@ async fn rejects_invalid_argument_value() -> Result<(), Box<dyn Error>> {
 
 #[tokio::test]
 async fn times_out_long_running_command() -> Result<(), Box<dyn Error>> {
-    let (addr, server_task) = spawn_server().await?;
+    let (addr, server_task) =
+        spawn_server(test_authenticator(&["agent-timeout"], &["client-timeout"])?).await?;
     let mut agent_stream = connect_agent(addr, "agent-timeout").await?;
     let policy = base_policy();
     let agent_task = tokio::spawn(async move {
@@ -329,7 +406,11 @@ async fn times_out_long_running_command() -> Result<(), Box<dyn Error>> {
 
 #[tokio::test]
 async fn truncates_output_at_limit() -> Result<(), Box<dyn Error>> {
-    let (addr, server_task) = spawn_server().await?;
+    let (addr, server_task) = spawn_server(test_authenticator(
+        &["agent-truncate"],
+        &["client-truncate"],
+    )?)
+    .await?;
     let mut agent_stream = connect_agent(addr, "agent-truncate").await?;
     let policy = base_policy();
     let agent_task = tokio::spawn(async move {

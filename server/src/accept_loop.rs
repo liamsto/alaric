@@ -1,19 +1,39 @@
 use std::future::{Future, pending};
 
-use crate::{connection::handle_connection, error::BoxError, state::ServerState};
+use crate::{
+    auth::HandshakeAuthenticator, connection::handle_connection, error::BoxError,
+    state::ServerState,
+};
 use tokio::net::TcpListener;
 use tracing::{error, info};
 
 pub async fn run(listener: TcpListener) -> Result<(), BoxError> {
-    run_until(listener, pending::<()>()).await
+    let authenticator = HandshakeAuthenticator::from_env_or_default_path()?;
+    run_until_with_auth(listener, pending::<()>(), authenticator).await
+}
+
+pub async fn run_with_auth(
+    listener: TcpListener,
+    authenticator: HandshakeAuthenticator,
+) -> Result<(), BoxError> {
+    run_until_with_auth(listener, pending::<()>(), authenticator).await
 }
 
 pub async fn run_until(
     listener: TcpListener,
     shutdown: impl Future<Output = ()> + Send,
 ) -> Result<(), BoxError> {
+    let authenticator = HandshakeAuthenticator::from_env_or_default_path()?;
+    run_until_with_auth(listener, shutdown, authenticator).await
+}
+
+pub async fn run_until_with_auth(
+    listener: TcpListener,
+    shutdown: impl Future<Output = ()> + Send,
+    authenticator: HandshakeAuthenticator,
+) -> Result<(), BoxError> {
     let local_addr = listener.local_addr()?;
-    let state = ServerState::new();
+    let state = ServerState::new(authenticator);
     tokio::pin!(shutdown);
 
     info!("server listening on {}", local_addr);

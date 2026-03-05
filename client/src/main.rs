@@ -8,9 +8,9 @@ use std::{
 use alaric_lib::{
     constants::DEFAULT_SERVER_PORT,
     protocol::{
-        AgentId, AgentMessage, ClientId, ClientMessage, HandshakeRequest, HandshakeResponse,
-        OutputStream, SecureChannel, read_json_frame, recv_secure_json, send_secure_json,
-        write_json_frame,
+        AgentId, AgentMessage, ClientId, ClientMessage, HandshakeProofRequest, HandshakeRequest,
+        HandshakeResponse, OutputStream, SecureChannel, build_auth_proof_ed25519, read_json_frame,
+        recv_secure_json, send_secure_json, write_json_frame,
     },
     security::noise::types::Keypair,
 };
@@ -48,6 +48,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )?;
     let target_agent_id =
         AgentId::new(env::var("TARGET_AGENT_ID").unwrap_or_else(|_| "agent-default".into()))?;
+    let auth_key_id = env::var("CLIENT_AUTH_KEY_ID")
+        .map_err(|_| "CLIENT_AUTH_KEY_ID must be set for handshake authentication")?;
+    let auth_private_key = env::var("CLIENT_AUTH_PRIVATE_KEY")
+        .map_err(|_| "CLIENT_AUTH_PRIVATE_KEY must be set for handshake authentication")?;
 
     let mut stream = tokio::select! {
         connect_result = TcpStream::connect(addr) => connect_result?,
@@ -74,6 +78,43 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
+    let response = match response {
+        HandshakeResponse::Challenge(challenge) => {
+            let proof =
+                build_auth_proof_ed25519(&request, &challenge, &auth_key_id, &auth_private_key)?;
+            let proof_request = HandshakeProofRequest::new(proof);
+            select! {
+                write_result = write_json_frame(&mut stream, &proof_request) => write_result?,
+                _ = &mut shutdown => {
+                    info!("shutdown signal received during auth proof exchange, exiting");
+                    return Ok(());
+                }
+            };
+
+            select! {
+                read_result = read_json_frame::<_, HandshakeResponse>(&mut stream) => read_result?,
+                _ = &mut shutdown => {
+                    info!("shutdown signal received while waiting for handshake completion, exiting");
+                    return Ok(());
+                }
+            }
+        }
+        HandshakeResponse::Accepted(accepted) => {
+            info!(
+                "handshake accepted (client_id={}, target_agent_id={}, session_id={})",
+                client_id, target_agent_id, accepted.session_id.0
+            );
+            HandshakeResponse::Accepted(accepted)
+        }
+        HandshakeResponse::Rejected(rejected) => {
+            return Err(format!(
+                "handshake rejected for client {} (target={}): {:?}: {}",
+                client_id, target_agent_id, rejected.code, rejected.message
+            )
+            .into());
+        }
+    };
+
     match response {
         HandshakeResponse::Accepted(accepted) => {
             info!(
@@ -88,7 +129,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             )
             .into());
         }
-    }
+        HandshakeResponse::Challenge(_) => {
+            return Err("unexpected second handshake challenge from server".into());
+        }
+    };
 
     let mut secure = select! {
         secure_result = SecureChannel::handshake_xx_initiator(&mut stream, Keypair::default_keypair()) => secure_result?,
@@ -237,6 +281,8 @@ fn usage_text() -> &'static str {
 Environment:
   CLIENT_ID          Optional client id (default: client-<pid>)
   TARGET_AGENT_ID    Optional target agent id (default: agent-default)
+  CLIENT_AUTH_KEY_ID      Required handshake auth key id for this client id
+  CLIENT_AUTH_PRIVATE_KEY Required Ed25519 private key hex for this client id
   COMMAND_ID         Optional fallback for --command-id"
 }
 
