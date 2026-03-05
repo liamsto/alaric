@@ -12,6 +12,8 @@ use tokio::{
     sync::{RwLock, oneshot},
 };
 
+use crate::auth::HandshakeAuthenticator;
+
 pub(crate) type AgentWaiter = oneshot::Sender<TcpStream>;
 pub(crate) type AgentRegistry = Arc<RwLock<HashMap<AgentId, AgentWaiter>>>;
 
@@ -19,13 +21,15 @@ pub(crate) type AgentRegistry = Arc<RwLock<HashMap<AgentId, AgentWaiter>>>;
 pub(crate) struct ServerState {
     pub(crate) agents: AgentRegistry,
     sessions: Arc<AtomicU64>,
+    pub(crate) authenticator: Arc<HandshakeAuthenticator>,
 }
 
 impl ServerState {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(authenticator: HandshakeAuthenticator) -> Self {
         Self {
             agents: Arc::new(RwLock::new(HashMap::new())),
             sessions: Arc::new(AtomicU64::new(1)),
+            authenticator: Arc::new(authenticator),
         }
     }
 

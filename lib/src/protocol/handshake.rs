@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::ids::{AgentId, ClientId, SessionId};
 
 pub const PROTOCOL_VERSION: u16 = 1;
+pub const AUTH_METHOD_SHARED_TOKEN_V1: &str = "shared_token_v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,6 +33,15 @@ impl fmt::Display for Role {
 pub struct AuthRequest {
     pub method: String,
     pub token: String,
+}
+
+impl AuthRequest {
+    pub fn shared_token(token: impl Into<String>) -> Self {
+        Self {
+            method: AUTH_METHOD_SHARED_TOKEN_V1.to_string(),
+            token: token.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +97,21 @@ impl HandshakeRequest {
         match self {
             HandshakeRequest::Agent { .. } => Role::Agent,
             HandshakeRequest::Client { .. } => Role::Client,
+        }
+    }
+
+    pub fn with_auth(mut self, auth: AuthRequest) -> Self {
+        match &mut self {
+            HandshakeRequest::Agent { auth: slot, .. } => *slot = Some(auth),
+            HandshakeRequest::Client { auth: slot, .. } => *slot = Some(auth),
+        }
+        self
+    }
+
+    pub fn auth(&self) -> Option<&AuthRequest> {
+        match self {
+            HandshakeRequest::Agent { auth, .. } => auth.as_ref(),
+            HandshakeRequest::Client { auth, .. } => auth.as_ref(),
         }
     }
 }

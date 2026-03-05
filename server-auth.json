@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "agents": {
+    "agent-default": "agent-dev-token"
+  },
+  "clients": {
+    "client-local": "client-dev-token"
+  }
+}

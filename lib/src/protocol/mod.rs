@@ -13,8 +13,8 @@ pub use framing::{
     write_json_frame,
 };
 pub use handshake::{
-    AuthRequest, HandshakeAccepted, HandshakeErrorCode, HandshakeRejected, HandshakeRequest,
-    HandshakeResponse, PROTOCOL_VERSION, Role,
+    AUTH_METHOD_SHARED_TOKEN_V1, AuthRequest, HandshakeAccepted, HandshakeErrorCode,
+    HandshakeRejected, HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION, Role,
 };
 pub use ids::{AgentId, ClientId, IdError, SessionId};
 pub use secure::{

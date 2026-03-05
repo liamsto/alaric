@@ -5,7 +5,7 @@ use std::{env, time::Duration};
 use alaric_agent::{policy::Policy, session::run_secure_session};
 use alaric_lib::constants::DEFAULT_SERVER_PORT;
 use alaric_lib::protocol::{
-    AgentId, HandshakeRequest, HandshakeResponse, read_json_frame, write_json_frame,
+    AgentId, AuthRequest, HandshakeRequest, HandshakeResponse, read_json_frame, write_json_frame,
 };
 use alaric_lib::security::noise::types::Keypair;
 use tokio::{net::TcpStream, time::sleep};
@@ -21,9 +21,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let addr = format!("127.0.0.1:{}", DEFAULT_SERVER_PORT);
     let agent_id = AgentId::new(env::var("AGENT_ID").unwrap_or_else(|_| "agent-default".into()))?;
+    let auth_token = env::var("AGENT_AUTH_TOKEN")
+        .map_err(|_| "AGENT_AUTH_TOKEN must be set for handshake authentication")?;
     let policy_path =
         env::var("AGENT_POLICY_PATH").unwrap_or_else(|_| "./agent-policy.json".to_string());
-    let policy = Policy::load_from_path(&policy_path)?;
+    let policy = Policy::load(&policy_path)?;
     info!("loaded policy from {}", policy_path);
 
     loop {
@@ -38,7 +40,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         match connect_result {
             Ok(stream) => {
                 tokio::select! {
-                    result = connection_loop(stream, agent_id.clone(), &policy) => {
+                    result = connection_loop(stream, agent_id.clone(), &auth_token, &policy) => {
                         if let Err(err) = result {
                             error!("connection error: {}", err);
                         }
@@ -69,10 +71,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 async fn connection_loop(
     mut stream: TcpStream,
     agent_id: AgentId,
+    auth_token: &str,
     policy: &Policy,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     info!("connected to {}", stream.peer_addr()?);
-    let request = HandshakeRequest::agent(agent_id.clone());
+    let request =
+        HandshakeRequest::agent(agent_id.clone()).with_auth(AuthRequest::shared_token(auth_token));
     write_json_frame(&mut stream, &request).await?;
 
     match read_json_frame::<_, HandshakeResponse>(&mut stream).await? {

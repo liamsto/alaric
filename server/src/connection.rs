@@ -48,6 +48,17 @@ pub(crate) async fn handle_connection(
         return Ok(());
     }
 
+    if let Err(err) = state.authenticator.authenticate(&request) {
+        send_reject(
+            &mut stream,
+            HandshakeErrorCode::Unauthorized,
+            format!("handshake authentication failed: {}", err),
+        )
+        .await?;
+        warn!("rejected unauthorized handshake from {}: {}", peer, err);
+        return Ok(());
+    }
+
     match request {
         HandshakeRequest::Agent { agent_id, .. } => {
             handle_agent(stream, state, peer, agent_id).await

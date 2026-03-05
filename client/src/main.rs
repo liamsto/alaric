@@ -8,9 +8,9 @@ use std::{
 use alaric_lib::{
     constants::DEFAULT_SERVER_PORT,
     protocol::{
-        AgentId, AgentMessage, ClientId, ClientMessage, HandshakeRequest, HandshakeResponse,
-        OutputStream, SecureChannel, read_json_frame, recv_secure_json, send_secure_json,
-        write_json_frame,
+        AgentId, AgentMessage, AuthRequest, ClientId, ClientMessage, HandshakeRequest,
+        HandshakeResponse, OutputStream, SecureChannel, read_json_frame, recv_secure_json,
+        send_secure_json, write_json_frame,
     },
     security::noise::types::Keypair,
 };
@@ -48,6 +48,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )?;
     let target_agent_id =
         AgentId::new(env::var("TARGET_AGENT_ID").unwrap_or_else(|_| "agent-default".into()))?;
+    let auth_token = env::var("CLIENT_AUTH_TOKEN")
+        .map_err(|_| "CLIENT_AUTH_TOKEN must be set for handshake authentication")?;
 
     let mut stream = tokio::select! {
         connect_result = TcpStream::connect(addr) => connect_result?,
@@ -57,7 +59,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     };
     info!("connected to {}", stream.peer_addr()?);
-    let request = HandshakeRequest::client(client_id.clone(), target_agent_id.clone());
+    let request = HandshakeRequest::client(client_id.clone(), target_agent_id.clone())
+        .with_auth(AuthRequest::shared_token(auth_token));
     tokio::select! {
         write_result = write_json_frame(&mut stream, &request) => write_result?,
         _ = &mut shutdown => {
@@ -237,6 +240,7 @@ fn usage_text() -> &'static str {
 Environment:
   CLIENT_ID          Optional client id (default: client-<pid>)
   TARGET_AGENT_ID    Optional target agent id (default: agent-default)
+  CLIENT_AUTH_TOKEN  Required handshake auth token for this client id
   COMMAND_ID         Optional fallback for --command-id"
 }
 
