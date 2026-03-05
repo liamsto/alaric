@@ -4,7 +4,7 @@ This project is a small exploration of a secure system for running a limited set
 
 ## Current capabilities
 - Relay handshake and tunnel pairing
-- Handshake authentication with per-id shared tokens
+- Handshake authentication with per-id Ed25519 keys (server stores public keys only)
 - Noise transport setup over the relay tunnel
 - Restricted command execution with a signed policy bundle
 - Argument validation (regex and enum rules)
@@ -14,7 +14,7 @@ This project is a small exploration of a secure system for running a limited set
 ## Policy bundle format
 The agent loads a signed policy bundle from `AGENT_POLICY_PATH` (default: `./agent-policy.json`)
 and trusted Ed25519 verification keys from `AGENT_POLICY_KEYS_PATH` (default: `./policy-keys.json`).
-For examples of the aforementioned files, see [policy-keys.json](policy-keys.json) and [agent-policy.json](agent-policy.json)
+For examples of the aforementioned files, see [policy-keys.example.json](policy-keys.example.json) and [agent-policy.example.json](agent-policy.example.json)
 
 Bundle schema:
 - `SignedPolicyBundle { bundle_version, expires_at_unix, policy, signature }`
@@ -30,27 +30,39 @@ Unsigned bundles, unknown `key_id`s, invalid signatures, unsupported bundle vers
 
 ## Running a simple local test
 
-1. Start the relay server:
+1. Create local runtime config files and per-machine auth keys:
+
+```bash
+cp agent-policy.example.json agent-policy.json
+cp policy-keys.example.json policy-keys.json
+
+# Writes ./server-auth.json and prints shell exports with private keys.
+cargo run -q -p alaric-lib --example gen_auth_config -- ./server-auth.json > .dev-auth.env
+```
+
+2. Start the relay server:
 
 ```bash
 cargo run -p alaric-server
 ```
 
-2. Start the agent in a second terminal:
+3. Start the agent in a second terminal:
 
 ```bash
+source ./.dev-auth.env
+
 AGENT_ID=agent-default \
-AGENT_AUTH_TOKEN=agent-dev-token \
 AGENT_POLICY_PATH=./agent-policy.json \
 AGENT_POLICY_KEYS_PATH=./policy-keys.json \
 cargo run -p alaric-agent
 ```
 
-3. Run a client command in a third terminal:
+4. Run a client command in a third terminal:
 
 ```bash
+source ./.dev-auth.env
+
 CLIENT_ID=client-local \
-CLIENT_AUTH_TOKEN=client-dev-token \
 TARGET_AGENT_ID=agent-default \
 cargo run -p alaric-client -- \
   --command-id echo_text \
@@ -67,7 +79,9 @@ Notes:
 
 - One command is processed per session currently.
 - The server does not inspect command messages and is generally blind to traffic, policy enforcement is handled by the agent.
-- Handshake auth config is read from `SERVER_AUTH_CONFIG_PATH` (default: `./server-auth.json`). See [server-auth.json](server-auth.json) for an example config.
+- Handshake auth uses server-issued nonce challenges and Ed25519 signatures over handshake context.
+- Handshake auth config is read from `SERVER_AUTH_CONFIG_PATH` (default: `./server-auth.json`). See [server-auth.example.json](server-auth.example.json) for schema and default ids.
+- Generated local files `server-auth.json` and `.dev-auth.env` are gitignored by default.
 
 ## Development hooks
 

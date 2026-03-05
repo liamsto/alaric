@@ -1,1 +1,5 @@
 /target
+/server-auth.json
+/agent-policy.json
+/policy-keys.json
+/.dev-auth.env
