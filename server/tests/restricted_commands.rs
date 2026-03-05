@@ -11,34 +11,58 @@ use alaric_agent::{
 };
 use alaric_lib::{
     protocol::{
-        AgentId, AgentMessage, AuthRequest, ClientId, ClientMessage, HandshakeRequest,
-        HandshakeResponse, OutputStream, RejectionCode, SecureChannel, read_json_frame,
-        recv_secure_json, send_secure_json, write_json_frame,
+        AgentId, AgentMessage, ClientId, ClientMessage, HandshakeProofRequest, HandshakeRequest,
+        HandshakeResponse, OutputStream, RejectionCode, SecureChannel, build_auth_proof_ed25519,
+        decode_ed25519_public_key, read_json_frame, recv_secure_json, send_secure_json,
+        write_json_frame,
     },
     security::noise::types::Keypair,
 };
-use alaric_server::HandshakeAuthenticator;
+use alaric_server::{HandshakeAuthenticator, IdentityPublicKey};
 use tokio::{
     net::{TcpListener, TcpStream},
     task::JoinHandle,
     time::timeout,
 };
 
-const AGENT_TOKEN: &str = "agent-test-token";
-const CLIENT_TOKEN: &str = "client-test-token";
+const AGENT_KEY_ID: &str = "agent-default-v1";
+const CLIENT_KEY_ID: &str = "client-local-v1";
+const AGENT_PRIVATE_KEY_HEX: &str =
+    "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+const AGENT_PUBLIC_KEY_HEX: &str =
+    "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+const CLIENT_PRIVATE_KEY_HEX: &str =
+    "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb";
+const CLIENT_PUBLIC_KEY_HEX: &str =
+    "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c";
 
 fn test_authenticator(
     agent_ids: &[&str],
     client_ids: &[&str],
 ) -> Result<HandshakeAuthenticator, Box<dyn Error>> {
+    let agent_public_key = decode_ed25519_public_key(AGENT_PUBLIC_KEY_HEX)?;
+    let client_public_key = decode_ed25519_public_key(CLIENT_PUBLIC_KEY_HEX)?;
+
     let mut agents = HashMap::new();
     for agent_id in agent_ids {
-        agents.insert(AgentId::new(*agent_id)?, AGENT_TOKEN.to_string());
+        agents.insert(
+            AgentId::new(*agent_id)?,
+            IdentityPublicKey {
+                key_id: AGENT_KEY_ID.to_string(),
+                public_key: agent_public_key,
+            },
+        );
     }
 
     let mut clients = HashMap::new();
     for client_id in client_ids {
-        clients.insert(ClientId::new(*client_id)?, CLIENT_TOKEN.to_string());
+        clients.insert(
+            ClientId::new(*client_id)?,
+            IdentityPublicKey {
+                key_id: CLIENT_KEY_ID.to_string(),
+                public_key: client_public_key,
+            },
+        );
     }
 
     Ok(HandshakeAuthenticator::new(agents, clients)?)
@@ -60,18 +84,25 @@ async fn connect_agent(
     agent_id: &str,
 ) -> Result<TcpStream, Box<dyn Error>> {
     let mut agent = TcpStream::connect(addr).await?;
-    write_json_frame(
-        &mut agent,
-        &HandshakeRequest::agent(AgentId::new(agent_id)?)
-            .with_auth(AuthRequest::shared_token(AGENT_TOKEN)),
-    )
-    .await?;
+    let request = HandshakeRequest::agent(AgentId::new(agent_id)?);
+    write_json_frame(&mut agent, &request).await?;
     let response = timeout(
         Duration::from_secs(2),
         read_json_frame::<_, HandshakeResponse>(&mut agent),
     )
     .await??;
-    assert!(matches!(response, HandshakeResponse::Accepted(_)));
+    let HandshakeResponse::Challenge(challenge) = response else {
+        panic!("expected handshake challenge");
+    };
+    let proof =
+        build_auth_proof_ed25519(&request, &challenge, AGENT_KEY_ID, AGENT_PRIVATE_KEY_HEX)?;
+    write_json_frame(&mut agent, &HandshakeProofRequest::new(proof)).await?;
+    let final_response = timeout(
+        Duration::from_secs(2),
+        read_json_frame::<_, HandshakeResponse>(&mut agent),
+    )
+    .await??;
+    assert!(matches!(final_response, HandshakeResponse::Accepted(_)));
     Ok(agent)
 }
 
@@ -81,19 +112,28 @@ async fn connect_client_secure(
     target_agent_id: &str,
 ) -> Result<(TcpStream, SecureChannel), Box<dyn Error>> {
     let mut client = TcpStream::connect(addr).await?;
-    write_json_frame(
-        &mut client,
-        &HandshakeRequest::client(ClientId::new(client_id)?, AgentId::new(target_agent_id)?)
-            .with_auth(AuthRequest::shared_token(CLIENT_TOKEN)),
-    )
-    .await?;
+    let request =
+        HandshakeRequest::client(ClientId::new(client_id)?, AgentId::new(target_agent_id)?);
+    write_json_frame(&mut client, &request).await?;
 
     let response = timeout(
         Duration::from_secs(2),
         read_json_frame::<_, HandshakeResponse>(&mut client),
     )
     .await??;
-    assert!(matches!(response, HandshakeResponse::Accepted(_)));
+    let HandshakeResponse::Challenge(challenge) = response else {
+        panic!("expected handshake challenge");
+    };
+    let proof =
+        build_auth_proof_ed25519(&request, &challenge, CLIENT_KEY_ID, CLIENT_PRIVATE_KEY_HEX)?;
+    write_json_frame(&mut client, &HandshakeProofRequest::new(proof)).await?;
+
+    let final_response = timeout(
+        Duration::from_secs(2),
+        read_json_frame::<_, HandshakeResponse>(&mut client),
+    )
+    .await??;
+    assert!(matches!(final_response, HandshakeResponse::Accepted(_)));
 
     let secure = timeout(
         Duration::from_secs(2),
