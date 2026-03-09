@@ -6,8 +6,8 @@ use std::{
 };
 
 use alaric_lib::protocol::{
-    AgentMessage, CommandProtocolError, OutputStream, RejectionCode, RequestId, SecureChannel,
-    send_secure_json,
+    AgentMessage, CommandId, CommandProtocolError, OutputStream, RejectionCode, RequestId,
+    SecureChannel, send_secure_json,
 };
 use regex::Regex;
 use tokio::{
@@ -23,13 +23,13 @@ pub async fn execute_request<S>(
     stream: &mut S,
     policy: &Policy,
     request_id: RequestId,
-    command_id: &str,
+    command_id: &CommandId,
     args: &BTreeMap<String, String>,
 ) -> Result<(), CommandProtocolError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let Some(command) = policy.command_by_id(command_id) else {
+    let Some(command) = policy.command_by_id(command_id.as_str()) else {
         return send_rejected(
             channel,
             stream,

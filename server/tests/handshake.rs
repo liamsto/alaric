@@ -123,7 +123,9 @@ async fn accepts_handshake_and_routes_payload() -> Result<(), Box<dyn Error>> {
         AGENT_PRIVATE_KEY_HEX,
     )
     .await?;
-    assert!(matches!(agent_response, HandshakeResponse::Accepted(_)));
+    let HandshakeResponse::Accepted(agent_accepted) = agent_response else {
+        panic!("expected accepted response for agent");
+    };
 
     let agent_task = tokio::spawn(async move {
         let mut agent_secure =
@@ -151,7 +153,10 @@ async fn accepts_handshake_and_routes_payload() -> Result<(), Box<dyn Error>> {
         CLIENT_PRIVATE_KEY_HEX,
     )
     .await?;
-    assert!(matches!(client_response, HandshakeResponse::Accepted(_)));
+    let HandshakeResponse::Accepted(client_accepted) = client_response else {
+        panic!("expected accepted response for client");
+    };
+    assert_eq!(agent_accepted.session_id, client_accepted.session_id);
 
     let mut client_secure = timeout(
         Duration::from_secs(2),

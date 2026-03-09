@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use crate::{
     error::BoxError,
     responses::{send_accept, send_challenge, send_reject},
-    state::ServerState,
+    state::{ServerState, WaitingAgent},
 };
 use alaric_lib::protocol::{
     AgentId, ClientId, HandshakeErrorCode, HandshakeProofRequest, HandshakeRequest,
@@ -112,6 +112,7 @@ async fn handle_agent(
     peer: SocketAddr,
     agent_id: AgentId,
 ) -> Result<(), BoxError> {
+    let session_id = state.next_session_id();
     let (tx, mut rx) = oneshot::channel::<TcpStream>();
     {
         let mut registry = state.agents.write().await;
@@ -128,17 +129,22 @@ async fn handle_agent(
             );
             return Ok(());
         }
-        registry.insert(agent_id.clone(), tx);
+        registry.insert(
+            agent_id.clone(),
+            WaitingAgent {
+                session_id,
+                waiter: tx,
+            },
+        );
     }
 
-    let session_id = state.next_session_id();
     if let Err(err) = send_accept(&mut stream, session_id).await {
         state.agents.write().await.remove(&agent_id);
         return Err(Box::new(err));
     }
     info!(
         "agent connected: {} (agent_id={}, session_id={}); waiting for client",
-        peer, agent_id, session_id.0
+        peer, agent_id, session_id
     );
 
     let mut probe = [0u8; 1];
@@ -207,7 +213,7 @@ async fn handle_client(
     client_id: ClientId,
     target_agent_id: AgentId,
 ) -> Result<(), BoxError> {
-    let Some(agent_waiter) = state.agents.write().await.remove(&target_agent_id) else {
+    let Some(waiting_agent) = state.agents.write().await.remove(&target_agent_id) else {
         send_reject(
             &mut stream,
             HandshakeErrorCode::AgentUnavailable,
@@ -221,19 +227,25 @@ async fn handle_client(
         return Ok(());
     };
 
-    let session_id = state.next_session_id();
+    let WaitingAgent {
+        session_id,
+        waiter: agent_waiter,
+    } = waiting_agent;
+
     if let Err(err) = send_accept(&mut stream, session_id).await {
-        state
-            .agents
-            .write()
-            .await
-            .insert(target_agent_id.clone(), agent_waiter);
+        state.agents.write().await.insert(
+            target_agent_id.clone(),
+            WaitingAgent {
+                session_id,
+                waiter: agent_waiter,
+            },
+        );
         return Err(Box::new(err));
     }
 
     info!(
         "client connected: {} (client_id={}, target_agent_id={}, session_id={})",
-        peer, client_id, target_agent_id, session_id.0
+        peer, client_id, target_agent_id, session_id
     );
 
     if let Err(stream) = agent_waiter.send(stream) {
