@@ -1,6 +1,9 @@
 use std::{collections::HashMap, sync::Arc};
 
-use alaric_lib::protocol::{AgentId, SessionId};
+use alaric_lib::{
+    database::Database,
+    protocol::{AgentId, SessionId},
+};
 use tokio::{
     net::TcpStream,
     sync::{RwLock, oneshot},
@@ -21,13 +24,18 @@ pub(crate) type AgentRegistry = Arc<RwLock<HashMap<AgentId, WaitingAgent>>>;
 pub(crate) struct ServerState {
     pub(crate) agents: AgentRegistry,
     pub(crate) authenticator: Arc<HandshakeAuthenticator>,
+    pub(crate) database: Option<Arc<Database>>,
 }
 
 impl ServerState {
-    pub(crate) fn new(authenticator: HandshakeAuthenticator) -> Self {
+    pub(crate) fn new(
+        authenticator: HandshakeAuthenticator,
+        database: Option<Arc<Database>>,
+    ) -> Self {
         Self {
             agents: Arc::new(RwLock::new(HashMap::new())),
             authenticator: Arc::new(authenticator),
+            database,
         }
     }
 

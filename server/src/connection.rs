@@ -7,7 +7,7 @@ use crate::{
 };
 use alaric_lib::protocol::{
     AgentId, ClientId, HandshakeErrorCode, HandshakeProofRequest, HandshakeRequest,
-    PROTOCOL_VERSION, read_json_frame,
+    PROTOCOL_VERSION, SessionId, read_json_frame,
 };
 use tokio::{
     io::{AsyncReadExt, copy_bidirectional},
@@ -24,6 +24,23 @@ pub(crate) async fn handle_connection(
     let request = match read_json_frame::<_, HandshakeRequest>(&mut stream).await {
         Ok(request) => request,
         Err(err) => {
+            if let Some(database) = &state.database {
+                if let Err(store_err) = database
+                    .record_session_rejection(
+                        SessionId::new_random(),
+                        None,
+                        HandshakeErrorCode::InvalidRequest,
+                        &format!("invalid handshake: {}", err),
+                        peer,
+                    )
+                    .await
+                {
+                    warn!(
+                        "failed to persist invalid handshake rejection: {}",
+                        store_err
+                    );
+                }
+            }
             warn!("invalid handshake from {}: {}", peer, err);
             let _ = send_reject(
                 &mut stream,
@@ -36,6 +53,27 @@ pub(crate) async fn handle_connection(
     };
 
     if request.protocol_version() != PROTOCOL_VERSION {
+        if let Some(database) = &state.database {
+            if let Err(store_err) = database
+                .record_session_rejection(
+                    SessionId::new_random(),
+                    Some(&request),
+                    HandshakeErrorCode::UnsupportedProtocolVersion,
+                    &format!(
+                        "server protocol version is {}, got {}",
+                        PROTOCOL_VERSION,
+                        request.protocol_version()
+                    ),
+                    peer,
+                )
+                .await
+            {
+                warn!(
+                    "failed to persist protocol-version rejection: {}",
+                    store_err
+                );
+            }
+        }
         send_reject(
             &mut stream,
             HandshakeErrorCode::UnsupportedProtocolVersion,
@@ -52,6 +90,23 @@ pub(crate) async fn handle_connection(
     let challenge = match state.authenticator.issue_challenge(&request).await {
         Ok(challenge) => challenge,
         Err(err) => {
+            if let Some(database) = &state.database {
+                if let Err(store_err) = database
+                    .record_session_rejection(
+                        SessionId::new_random(),
+                        Some(&request),
+                        HandshakeErrorCode::Unauthorized,
+                        &format!("handshake authentication failed: {}", err),
+                        peer,
+                    )
+                    .await
+                {
+                    warn!(
+                        "failed to persist challenge issuance rejection: {}",
+                        store_err
+                    );
+                }
+            }
             send_reject(
                 &mut stream,
                 HandshakeErrorCode::Unauthorized,
@@ -68,6 +123,20 @@ pub(crate) async fn handle_connection(
     let proof_request = match read_json_frame::<_, HandshakeProofRequest>(&mut stream).await {
         Ok(proof_request) => proof_request,
         Err(err) => {
+            if let Some(database) = &state.database {
+                if let Err(store_err) = database
+                    .record_session_rejection(
+                        SessionId::new_random(),
+                        Some(&request),
+                        HandshakeErrorCode::InvalidRequest,
+                        &format!("invalid auth proof request: {}", err),
+                        peer,
+                    )
+                    .await
+                {
+                    warn!("failed to persist auth-proof rejection: {}", store_err);
+                }
+            }
             send_reject(
                 &mut stream,
                 HandshakeErrorCode::InvalidRequest,
@@ -84,6 +153,20 @@ pub(crate) async fn handle_connection(
         .authenticate(&request, &challenge, &proof_request)
         .await
     {
+        if let Some(database) = &state.database {
+            if let Err(store_err) = database
+                .record_session_rejection(
+                    SessionId::new_random(),
+                    Some(&request),
+                    HandshakeErrorCode::Unauthorized,
+                    &format!("handshake authentication failed: {}", err),
+                    peer,
+                )
+                .await
+            {
+                warn!("failed to persist unauthorized rejection: {}", store_err);
+            }
+        }
         send_reject(
             &mut stream,
             HandshakeErrorCode::Unauthorized,
@@ -113,10 +196,25 @@ async fn handle_agent(
     agent_id: AgentId,
 ) -> Result<(), BoxError> {
     let session_id = state.next_session_id();
+    let agent_request = HandshakeRequest::agent(agent_id.clone());
     let (tx, mut rx) = oneshot::channel::<TcpStream>();
     {
         let mut registry = state.agents.write().await;
         if registry.contains_key(&agent_id) {
+            if let Some(database) = &state.database {
+                if let Err(store_err) = database
+                    .record_session_rejection(
+                        SessionId::new_random(),
+                        Some(&agent_request),
+                        HandshakeErrorCode::AgentIdInUse,
+                        &format!("agent id '{}' is already connected", agent_id),
+                        peer,
+                    )
+                    .await
+                {
+                    warn!("failed to persist duplicate-agent rejection: {}", store_err);
+                }
+            }
             send_reject(
                 &mut stream,
                 HandshakeErrorCode::AgentIdInUse,
@@ -142,6 +240,14 @@ async fn handle_agent(
         state.agents.write().await.remove(&agent_id);
         return Err(Box::new(err));
     }
+    if let Some(database) = &state.database {
+        if let Err(store_err) = database
+            .record_agent_waiting(session_id, &agent_id, peer)
+            .await
+        {
+            warn!("failed to persist agent waiting state: {}", store_err);
+        }
+    }
     info!(
         "agent connected: {} (agent_id={}, session_id={}); waiting for client",
         peer, agent_id, session_id
@@ -154,6 +260,18 @@ async fn handle_agent(
                 Ok(client_stream) => client_stream,
                 Err(_) => {
                     state.agents.write().await.remove(&agent_id);
+                    if let Some(database) = &state.database {
+                        if let Err(store_err) = database
+                            .record_agent_disconnected(
+                                session_id,
+                                &agent_id,
+                                "agent disconnected before client pairing",
+                            )
+                            .await
+                        {
+                            warn!("failed to persist agent disconnect: {}", store_err);
+                        }
+                    }
                     info!(
                         "agent {} from {} disconnected before client pairing",
                         agent_id, peer
@@ -184,6 +302,18 @@ async fn handle_agent(
                 }
             }
             state.agents.write().await.remove(&agent_id);
+            if let Some(database) = &state.database {
+                if let Err(store_err) = database
+                    .record_agent_disconnected(
+                        session_id,
+                        &agent_id,
+                        "agent disconnected before client pairing",
+                    )
+                    .await
+                {
+                    warn!("failed to persist pre-pairing disconnect: {}", store_err);
+                }
+            }
             return Ok(());
         }
     };
@@ -202,6 +332,17 @@ async fn handle_agent(
     }
 
     state.agents.write().await.remove(&agent_id);
+    if let Some(database) = &state.database {
+        if let Err(store_err) = database
+            .record_agent_disconnected(session_id, &agent_id, "agent disconnected")
+            .await
+        {
+            warn!("failed to persist agent disconnection: {}", store_err);
+        }
+        if let Err(store_err) = database.record_session_completed(session_id).await {
+            warn!("failed to persist session completion: {}", store_err);
+        }
+    }
     info!("agent disconnected: {} (agent_id={})", peer, agent_id);
     Ok(())
 }
@@ -213,7 +354,25 @@ async fn handle_client(
     client_id: ClientId,
     target_agent_id: AgentId,
 ) -> Result<(), BoxError> {
+    let client_request = HandshakeRequest::client(client_id.clone(), target_agent_id.clone());
     let Some(waiting_agent) = state.agents.write().await.remove(&target_agent_id) else {
+        if let Some(database) = &state.database {
+            if let Err(store_err) = database
+                .record_session_rejection(
+                    SessionId::new_random(),
+                    Some(&client_request),
+                    HandshakeErrorCode::AgentUnavailable,
+                    &format!("target agent '{}' is not connected", target_agent_id),
+                    peer,
+                )
+                .await
+            {
+                warn!(
+                    "failed to persist unavailable-agent rejection: {}",
+                    store_err
+                );
+            }
+        }
         send_reject(
             &mut stream,
             HandshakeErrorCode::AgentUnavailable,
@@ -243,6 +402,14 @@ async fn handle_client(
         return Err(Box::new(err));
     }
 
+    if let Some(database) = &state.database {
+        if let Err(store_err) = database
+            .record_client_pairing(session_id, &client_id, &target_agent_id, peer)
+            .await
+        {
+            warn!("failed to persist client pairing: {}", store_err);
+        }
+    }
     info!(
         "client connected: {} (client_id={}, target_agent_id={}, session_id={})",
         peer, client_id, target_agent_id, session_id

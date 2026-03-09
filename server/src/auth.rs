@@ -7,9 +7,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use alaric_lib::protocol::{
-    AUTH_METHOD_ED25519_CHALLENGE_V1, AgentId, ClientId, HandshakeChallenge, HandshakeProofRequest,
-    HandshakeRequest, PROTOCOL_VERSION, decode_ed25519_public_key, verify_auth_proof_ed25519,
+use alaric_lib::{
+    database::{Database, principals::PrincipalKind},
+    protocol::{
+        AUTH_METHOD_ED25519_CHALLENGE_V1, AgentId, ClientId, HandshakeChallenge,
+        HandshakeProofRequest, HandshakeRequest, PROTOCOL_VERSION, decode_ed25519_public_key,
+        verify_auth_proof_ed25519,
+    },
 };
 use rand::random;
 use serde::Deserialize;
@@ -32,6 +36,7 @@ pub enum HandshakeAuthError {
     },
     Invalid(String),
     Unauthorized(String),
+    Database(String),
 }
 
 impl fmt::Display for HandshakeAuthError {
@@ -57,6 +62,9 @@ impl fmt::Display for HandshakeAuthError {
                 write!(f, "invalid handshake auth configuration: {}", message)
             }
             HandshakeAuthError::Unauthorized(message) => f.write_str(message),
+            HandshakeAuthError::Database(message) => {
+                write!(f, "database-backed handshake auth failed: {}", message)
+            }
         }
     }
 }
@@ -135,6 +143,47 @@ impl HandshakeAuthenticator {
             client_keys,
             issued_challenges: Mutex::new(HashMap::new()),
         })
+    }
+
+    pub async fn from_database(database: &Database) -> Result<Self, HandshakeAuthError> {
+        let rows = database
+            .load_active_principal_keys()
+            .await
+            .map_err(|err| HandshakeAuthError::Database(err.to_string()))?;
+
+        let mut agent_keys = HashMap::new();
+        let mut client_keys = HashMap::new();
+
+        for row in rows {
+            match row.kind {
+                PrincipalKind::Agent => {
+                    let agent_id = AgentId::new(&row.external_id).map_err(|err| {
+                        HandshakeAuthError::Invalid(format!(
+                            "invalid authorized agent id from database: {}",
+                            err
+                        ))
+                    })?;
+                    agent_keys.entry(agent_id).or_insert(IdentityPublicKey {
+                        key_id: row.key_id,
+                        public_key: row.public_key,
+                    });
+                }
+                PrincipalKind::Client => {
+                    let client_id = ClientId::new(&row.external_id).map_err(|err| {
+                        HandshakeAuthError::Invalid(format!(
+                            "invalid authorized client id from database: {}",
+                            err
+                        ))
+                    })?;
+                    client_keys.entry(client_id).or_insert(IdentityPublicKey {
+                        key_id: row.key_id,
+                        public_key: row.public_key,
+                    });
+                }
+            }
+        }
+
+        Self::new(agent_keys, client_keys)
     }
 
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self, HandshakeAuthError> {
