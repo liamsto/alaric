@@ -1,7 +1,10 @@
 pub mod agents;
 pub mod command_runs;
 pub mod principals;
+mod server_store;
 pub mod sessions;
+
+pub use server_store::{ActivePrincipalKey, PruneLogsResult, ServerStoreError};
 
 use std::{error::Error, fmt, time::Duration};
 

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sqlx::{
-    prelude::FromRow,
+    prelude::{FromRow, Type},
     types::{
         Uuid,
         chrono::{DateTime, Utc},
@@ -9,24 +9,7 @@ use sqlx::{
 
 use crate::protocol::{CommandId, RejectionCode, RequestId, SessionId};
 
-// command_runs (
-//   run_id                   UUID PRIMARY KEY,
-//   session_id               UUID NOT NULL REFERENCES session_log(session_id),
-//   request_id               BIGINT NOT NULL,
-//   command_id               TEXT NOT NULL,
-//   outcome                  command_run_outcome NOT NULL,  -- completed/rejected/error
-//   exit_code                INTEGER,
-//   timed_out                BOOLEAN,
-//   truncated                BOOLEAN,
-//   rejection_code           command_rejection_code,
-//   error_code               TEXT,
-//   error_message            TEXT,
-//   started_at               TIMESTAMPTZ NOT NULL,
-//   completed_at             TIMESTAMPTZ NOT NULL,
-//   reported_at              TIMESTAMPTZ NOT NULL,
-//   UNIQUE (session_id, request_id)
-// );
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[sqlx(type_name = "command_run_outcome", rename_all = "snake_case")]
 pub enum CommandRunOutcome {
     Completed,
@@ -34,7 +17,7 @@ pub enum CommandRunOutcome {
     Error,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[sqlx(type_name = "command_rejection_code", rename_all = "snake_case")]
 pub enum CommandRejectionCode {
     UnknownCommand,
