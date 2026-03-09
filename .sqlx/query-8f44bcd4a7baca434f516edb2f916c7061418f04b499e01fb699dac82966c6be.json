@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    INSERT INTO command_runs (\n                        run_id,\n                        session_id,\n                        request_id,\n                        command_id,\n                        outcome,\n                        rejection_code,\n                        error_message,\n                        started_at,\n                        completed_at,\n                        reported_at\n                    )\n                    VALUES ($1, $2, $3, $4, 'rejected', $5, $6, $7, $8, NOW())\n                    ON CONFLICT (session_id, request_id) DO UPDATE\n                    SET run_id = EXCLUDED.run_id,\n                        command_id = EXCLUDED.command_id,\n                        outcome = EXCLUDED.outcome,\n                        exit_code = NULL,\n                        timed_out = NULL,\n                        truncated = NULL,\n                        rejection_code = EXCLUDED.rejection_code,\n                        error_code = NULL,\n                        error_message = EXCLUDED.error_message,\n                        started_at = EXCLUDED.started_at,\n                        completed_at = EXCLUDED.completed_at,\n                        reported_at = NOW()\n                    RETURNING session_id\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "session_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Text",
+        {
+          "Custom": {
+            "name": "command_rejection_code",
+            "kind": {
+              "Enum": [
+                "unknown_command",
+                "invalid_args",
+                "policy_error",
+                "execution_error",
+                "timeout",
+                "output_limit"
+              ]
+            }
+          }
+        },
+        "Text",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8f44bcd4a7baca434f516edb2f916c7061418f04b499e01fb699dac82966c6be"
+}

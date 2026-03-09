@@ -38,6 +38,10 @@ cp policy-keys.example.json policy-keys.json
 
 # Writes ./server-auth.json and prints shell exports with private keys.
 cargo run -q -p alaric-lib --example gen_auth_config -- ./server-auth.json > .dev-auth.env
+
+./scripts/db18-up.sh
+export DATABASE_URL=postgres://alaric:alaric@127.0.0.1:55432/alaric
+cargo run -q -p alaric-lib --example import_auth_config -- ./server-auth.json
 ```
 
 2. Start the relay server:
@@ -80,8 +84,32 @@ Notes:
 - One command is processed per session currently.
 - The server does not inspect command messages and is generally blind to traffic, policy enforcement is handled by the agent.
 - Handshake auth uses server-issued nonce challenges and Ed25519 signatures over handshake context.
-- Handshake auth config is read from `SERVER_AUTH_CONFIG_PATH` (default: `./server-auth.json`). See [server-auth.example.json](server-auth.example.json) for schema and default ids.
+- Server handshake authorization is loaded from PostgreSQL (`principals` + `principal_keys`).
+- The generated `server-auth.json` is still useful as local key material, but runtime authorization is DB-backed.
 - Generated local files `server-auth.json` and `.dev-auth.env` are gitignored by default.
+
+## SQLx Compile-Time Checking
+
+The server-side SQL lives in `alaric-lib`, and dependent crates do not need a direct `sqlx` dependency.
+
+Server database env vars:
+- `DATABASE_URL` (required for `alaric-server` runtime)
+- `DATABASE_MAX_CONNECTIONS` (optional, default `10`)
+- `DATABASE_ACQUIRE_TIMEOUT_SECS` (optional, default `5`)
+- `LOG_RETENTION_DAYS` (optional, default `60`, allowed `30..=90`)
+
+To refresh query metadata against PostgreSQL 18:
+
+```bash
+./scripts/sqlx-prepare.sh
+```
+
+This script:
+- starts PostgreSQL 18 via `docker-compose.postgres18.yml`
+- applies migrations from `lib/migrations`
+- runs `cargo sqlx prepare --workspace -- --workspace`
+
+Offline SQLx checking is enabled by default via `.cargo/config.toml` (`SQLX_OFFLINE=true`), so normal builds/tests do not require a running database.
 
 ## Development hooks
 
