@@ -352,10 +352,12 @@ impl Database {
         session_id: SessionId,
         agent_id: &AgentId,
         reason: &str,
+        mark_error: bool,
     ) -> Result<(), ServerStoreError> {
-        let _ = sqlx::query_as!(
-            SessionIdRow,
-            r#"
+        if mark_error {
+            let _ = sqlx::query_as!(
+                SessionIdRow,
+                r#"
             UPDATE session_log
             SET completed_at = NOW(),
                 error_code = COALESCE(error_code, 'agent_disconnected'),
@@ -367,11 +369,14 @@ impl Database {
             WHERE session_id = $1
             RETURNING session_id
             "#,
-            session_id.as_uuid(),
-            reason,
-        )
-        .fetch_optional(self.pool())
-        .await?;
+                session_id.as_uuid(),
+                reason,
+            )
+            .fetch_optional(self.pool())
+            .await?;
+        } else {
+            self.record_session_completed(session_id).await?;
+        }
 
         if let Some(agent_principal_id) =
             resolve_principal_id(self, PrincipalKind::Agent, Some(agent_id.as_str())).await?
