@@ -484,7 +484,7 @@ impl Database {
                 .await?;
             }
             CommandRunResult::Rejected { code, message } => {
-                let rejection_code: CommandRejectionCode = (*code).into();
+                let rejection_code: CommandRejectionCode = *code;
                 let _ = sqlx::query_as!(
                     SessionIdRow,
                     r#"

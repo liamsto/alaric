@@ -480,13 +480,11 @@ impl Database {
 }
 
 fn validate_principal_id(kind: PrincipalKind, external_id: &str) -> Result<(), AdminStoreError> {
-    let result = match kind {
+    match kind {
         PrincipalKind::Agent => AgentId::new(external_id).map(|_| ()),
         PrincipalKind::Client => ClientId::new(external_id).map(|_| ()),
     }
-    .map_err(|err| AdminStoreError::InvalidPrincipalId(err.to_string()));
-
-    result
+    .map_err(|err| AdminStoreError::InvalidPrincipalId(err.to_string()))
 }
 
 async fn find_principal_state<'a, E>(
