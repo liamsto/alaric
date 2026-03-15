@@ -12,6 +12,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "alaric-admin"
+version = "0.1.0"
+dependencies = [
+ "alaric-lib",
+ "tokio",
+]
+
+[[package]]
 name = "alaric-agent"
 version = "0.1.0"
 dependencies = [

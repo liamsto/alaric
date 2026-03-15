@@ -1,9 +1,7 @@
 use std::{
     collections::HashMap,
-    env,
     error::Error,
-    fmt, fs, io,
-    path::{Path, PathBuf},
+    fmt,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -11,29 +9,16 @@ use alaric_lib::{
     database::{Database, principals::PrincipalKind},
     protocol::{
         AUTH_METHOD_ED25519_CHALLENGE_V1, AgentId, ClientId, HandshakeChallenge,
-        HandshakeProofRequest, HandshakeRequest, PROTOCOL_VERSION, decode_ed25519_public_key,
-        verify_auth_proof_ed25519,
+        HandshakeProofRequest, HandshakeRequest, PROTOCOL_VERSION, verify_auth_proof_ed25519,
     },
 };
 use rand::random;
-use serde::Deserialize;
 use tokio::sync::Mutex;
 
-const AUTH_CONFIG_VERSION_V2: u16 = 2;
-const AUTH_CONFIG_PATH_ENV: &str = "SERVER_AUTH_CONFIG_PATH";
-const DEFAULT_AUTH_CONFIG_PATH: &str = "./server-auth.json";
 const CHALLENGE_TTL_SECS: u64 = 30;
 
 #[derive(Debug)]
 pub enum HandshakeAuthError {
-    Io {
-        path: PathBuf,
-        source: io::Error,
-    },
-    Parse {
-        path: PathBuf,
-        source: serde_json::Error,
-    },
     Invalid(String),
     Unauthorized(String),
     Database(String),
@@ -42,22 +27,6 @@ pub enum HandshakeAuthError {
 impl fmt::Display for HandshakeAuthError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HandshakeAuthError::Io { path, source } => {
-                write!(
-                    f,
-                    "failed to read handshake auth config '{}': {}",
-                    path.display(),
-                    source
-                )
-            }
-            HandshakeAuthError::Parse { path, source } => {
-                write!(
-                    f,
-                    "failed to parse handshake auth config '{}': {}",
-                    path.display(),
-                    source
-                )
-            }
             HandshakeAuthError::Invalid(message) => {
                 write!(f, "invalid handshake auth configuration: {}", message)
             }
@@ -84,28 +53,7 @@ pub struct HandshakeAuthenticator {
     issued_challenges: Mutex<HashMap<String, u64>>,
 }
 
-#[derive(Debug, Deserialize)]
-struct AuthConfigFile {
-    version: u16,
-    #[serde(default)]
-    agents: HashMap<String, AuthConfigIdentity>,
-    #[serde(default)]
-    clients: HashMap<String, AuthConfigIdentity>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AuthConfigIdentity {
-    key_id: String,
-    public_key: String,
-}
-
 impl HandshakeAuthenticator {
-    pub fn from_env_or_default_path() -> Result<Self, HandshakeAuthError> {
-        let path =
-            env::var(AUTH_CONFIG_PATH_ENV).unwrap_or_else(|_| DEFAULT_AUTH_CONFIG_PATH.to_string());
-        Self::load_from_path(path)
-    }
-
     pub fn new(
         agent_keys: HashMap<AgentId, IdentityPublicKey>,
         client_keys: HashMap<ClientId, IdentityPublicKey>,
@@ -181,71 +129,6 @@ impl HandshakeAuthenticator {
                     });
                 }
             }
-        }
-
-        Self::new(agent_keys, client_keys)
-    }
-
-    pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self, HandshakeAuthError> {
-        let path = path.as_ref().to_path_buf();
-        let raw = fs::read_to_string(&path).map_err(|source| HandshakeAuthError::Io {
-            path: path.clone(),
-            source,
-        })?;
-
-        let config: AuthConfigFile =
-            serde_json::from_str(&raw).map_err(|source| HandshakeAuthError::Parse {
-                path: path.clone(),
-                source,
-            })?;
-
-        if config.version != AUTH_CONFIG_VERSION_V2 {
-            return Err(HandshakeAuthError::Invalid(format!(
-                "unsupported auth config version {}; expected {}",
-                config.version, AUTH_CONFIG_VERSION_V2
-            )));
-        }
-
-        let mut agent_keys = HashMap::new();
-        for (id, config_identity) in config.agents {
-            let agent_id = AgentId::new(id).map_err(|err| {
-                HandshakeAuthError::Invalid(format!("invalid authorized agent id: {}", err))
-            })?;
-            let public_key =
-                decode_ed25519_public_key(&config_identity.public_key).map_err(|err| {
-                    HandshakeAuthError::Invalid(format!(
-                        "agent '{}' has invalid public_key: {}",
-                        agent_id, err
-                    ))
-                })?;
-            agent_keys.insert(
-                agent_id,
-                IdentityPublicKey {
-                    key_id: config_identity.key_id,
-                    public_key,
-                },
-            );
-        }
-
-        let mut client_keys = HashMap::new();
-        for (id, config_identity) in config.clients {
-            let client_id = ClientId::new(id).map_err(|err| {
-                HandshakeAuthError::Invalid(format!("invalid authorized client id: {}", err))
-            })?;
-            let public_key =
-                decode_ed25519_public_key(&config_identity.public_key).map_err(|err| {
-                    HandshakeAuthError::Invalid(format!(
-                        "client '{}' has invalid public_key: {}",
-                        client_id, err
-                    ))
-                })?;
-            client_keys.insert(
-                client_id,
-                IdentityPublicKey {
-                    key_id: config_identity.key_id,
-                    public_key,
-                },
-            );
         }
 
         Self::new(agent_keys, client_keys)

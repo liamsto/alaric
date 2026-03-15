@@ -41,16 +41,30 @@ cargo run -q -p alaric-lib --example gen_auth_config -- ./server-auth.json > .de
 
 ./scripts/db18-up.sh
 export DATABASE_URL=postgres://alaric:alaric@127.0.0.1:55432/alaric
-cargo run -q -p alaric-lib --example import_auth_config -- ./server-auth.json
 ```
 
-2. Start the relay server:
+2. Add principals and keys with `alaric-admin` (requires `jq` for this quick path):
+
+```bash
+AGENT_PUBLIC_KEY="$(jq -r '.agents["agent-default"].public_key' ./server-auth.json)"
+CLIENT_PUBLIC_KEY="$(jq -r '.clients["client-local"].public_key' ./server-auth.json)"
+
+cargo run -q -p alaric-admin -- principal add agent agent-default --display-name "Default local agent"
+cargo run -q -p alaric-admin -- principal add client client-local --display-name "Default local client"
+
+cargo run -q -p alaric-admin -- key add agent agent-default agent-default-v1 "$AGENT_PUBLIC_KEY"
+cargo run -q -p alaric-admin -- key add client client-local client-local-v1 "$CLIENT_PUBLIC_KEY"
+
+cargo run -q -p alaric-admin -- principal list
+```
+
+3. Start the relay server:
 
 ```bash
 cargo run -p alaric-server
 ```
 
-3. Start the agent in a second terminal:
+4. Start the agent in a second terminal:
 
 ```bash
 source ./.dev-auth.env
@@ -61,7 +75,7 @@ AGENT_POLICY_KEYS_PATH=./policy-keys.json \
 cargo run -p alaric-agent
 ```
 
-4. Run a client command in a third terminal:
+5. Run a client command in a third terminal:
 
 ```bash
 source ./.dev-auth.env
@@ -71,6 +85,23 @@ TARGET_AGENT_ID=agent-default \
 cargo run -p alaric-client -- \
   --command-id echo_text \
   --arg text=hello
+```
+
+6. Basic admin tasks (examples):
+
+```bash
+# list all principals
+cargo run -q -p alaric-admin -- principal list
+
+# disable and then re-enable a client principal
+cargo run -q -p alaric-admin -- principal disable client client-local
+cargo run -q -p alaric-admin -- principal add client client-local --display-name "Default local client"
+
+# revoke a specific key
+cargo run -q -p alaric-admin -- key revoke client client-local client-local-v1
+
+# rotate an agent key (be sure the agent is updated to use the new private key)
+cargo run -q -p alaric-admin -- key rotate agent agent-default agent-default-v2 <new_public_key_hex>
 ```
 
 Client usage:
@@ -87,6 +118,21 @@ Notes:
 - Server handshake authorization is loaded from PostgreSQL (`principals` + `principal_keys`).
 - The generated `server-auth.json` is still useful as local key material, but runtime authorization is DB-backed.
 - Generated local files `server-auth.json` and `.dev-auth.env` are gitignored by default.
+
+## Admin provisioning CLI
+
+`alaric-admin` is a CLI for managing handshake principals and keys in PostgreSQL. It doesn't do any relaying or send any traffic, that responsibility remains with `alaric-server` which acts as a daemon.
+
+Commands:
+
+```text
+alaric-admin principal add <agent|client> <external_id> [--display-name <name>]
+alaric-admin principal disable <agent|client> <external_id>
+alaric-admin principal list [agent|client|all]
+alaric-admin key add <agent|client> <external_id> <key_id> <public_key_hex>
+alaric-admin key rotate <agent|client> <external_id> <new_key_id> <new_public_key_hex>
+alaric-admin key revoke <agent|client> <external_id> <key_id>
+```
 
 ## SQLx Compile-Time Checking
 
