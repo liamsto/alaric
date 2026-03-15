@@ -5,8 +5,8 @@ mod ids;
 mod secure;
 
 pub use commands::{
-    AgentMessage, ClientMessage, CommandProtocolError, OutputStream, RejectionCode, RequestId,
-    recv_secure_json, send_secure_json,
+    AgentMessage, ClientMessage, CommandId, CommandIdError, CommandProtocolError, OutputStream,
+    RejectionCode, RequestId, recv_secure_json, send_secure_json,
 };
 pub use framing::{
     MAX_FRAME_BYTES, ProtocolError, read_bytes_frame, read_json_frame, write_bytes_frame,

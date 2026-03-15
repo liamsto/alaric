@@ -101,7 +101,7 @@ async fn connection_loop(
         HandshakeResponse::Accepted(accepted) => {
             info!(
                 "handshake accepted (agent_id={}, session_id={})",
-                agent_id, accepted.session_id.0
+                agent_id, accepted.session_id
             );
             run_secure_session(&mut stream, policy, Keypair::default_keypair()).await?;
             return Ok(());
@@ -115,7 +115,7 @@ async fn connection_loop(
         HandshakeResponse::Accepted(accepted) => {
             info!(
                 "handshake accepted (agent_id={}, session_id={})",
-                agent_id, accepted.session_id.0
+                agent_id, accepted.session_id
             );
         }
         HandshakeResponse::Rejected(rejected) => {

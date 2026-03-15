@@ -1,6 +1,8 @@
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, str::FromStr};
 
+use rand::random;
 use serde::{Deserialize, Deserializer, Serialize};
+use sqlx::types::Uuid;
 
 const MIN_ID_LEN: usize = 3;
 const MAX_ID_LEN: usize = 64;
@@ -133,5 +135,77 @@ impl<'de> Deserialize<'de> for ClientId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SessionId(pub u64);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SessionId(Uuid);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionIdError(String);
+
+impl SessionId {
+    pub fn new_random() -> Self {
+        let mut bytes = random::<[u8; 16]>();
+        // RFC 4122 v4 UUID layout.
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        Self(Uuid::from_bytes(bytes))
+    }
+
+    pub fn as_uuid(self) -> Uuid {
+        self.0
+    }
+}
+
+impl fmt::Display for SessionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl Serialize for SessionId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for SessionId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+impl From<Uuid> for SessionId {
+    fn from(value: Uuid) -> Self {
+        Self(value)
+    }
+}
+
+impl From<SessionId> for Uuid {
+    fn from(value: SessionId) -> Self {
+        value.0
+    }
+}
+
+impl FromStr for SessionId {
+    type Err = SessionIdError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Uuid::parse_str(s)
+            .map(Self)
+            .map_err(|err| SessionIdError(format!("invalid session id '{}': {}", s, err)))
+    }
+}
+
+impl fmt::Display for SessionIdError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Error for SessionIdError {}

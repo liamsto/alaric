@@ -3,3 +3,6 @@
 build-native = "build --config build.rustflags=['-C','target-cpu=native']"
 test-native = "test --config build.rustflags=['-C','target-cpu=native']"
 clippy-native = "clippy --config build.rustflags=['-C','target-cpu=native']"
+
+[env]
+SQLX_OFFLINE = "true"

@@ -27,3 +27,9 @@ jobs:
         uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          # Work around Cargo lockfile bug that can retain crates not present in the
+          # actual dependency graph (the `rsa` crate in this case), causing false-positive audit
+          # failures. It seems like everyone on earth has ran into this issue, but no concrete fix yet.
+          # Remove once rust-lang/cargo#10801 is fixed:
+          # https://github.com/rust-lang/cargo/issues/10801
+          ignore: RUSTSEC-2023-0071

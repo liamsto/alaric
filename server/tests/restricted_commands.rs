@@ -11,10 +11,10 @@ use alaric_agent::{
 };
 use alaric_lib::{
     protocol::{
-        AgentId, AgentMessage, ClientId, ClientMessage, HandshakeProofRequest, HandshakeRequest,
-        HandshakeResponse, OutputStream, RejectionCode, SecureChannel, build_auth_proof_ed25519,
-        decode_ed25519_public_key, read_json_frame, recv_secure_json, send_secure_json,
-        write_json_frame,
+        AgentId, AgentMessage, ClientId, ClientMessage, CommandId, HandshakeProofRequest,
+        HandshakeRequest, HandshakeResponse, OutputStream, RejectionCode, RequestId, SecureChannel,
+        build_auth_proof_ed25519, decode_ed25519_public_key, read_json_frame, recv_secure_json,
+        send_secure_json, write_json_frame,
     },
     security::noise::types::Keypair,
 };
@@ -234,8 +234,8 @@ async fn allows_command_and_streams_output() -> Result<(), Box<dyn Error>> {
         &mut secure,
         &mut client_stream,
         &ClientMessage::Execute {
-            request_id: 1,
-            command_id: "echo".to_string(),
+            request_id: RequestId(1),
+            command_id: CommandId::new("echo").expect("valid command id"),
             args,
         },
     )
@@ -244,12 +244,14 @@ async fn allows_command_and_streams_output() -> Result<(), Box<dyn Error>> {
     let messages = receive_until_terminal(&mut secure, &mut client_stream).await?;
     assert!(matches!(
         messages[0],
-        AgentMessage::Started { request_id: 1 }
+        AgentMessage::Started {
+            request_id: RequestId(1)
+        }
     ));
     assert!(messages.iter().any(|message| matches!(
         message,
         AgentMessage::Output {
-            request_id: 1,
+            request_id: RequestId(1),
             stream: OutputStream::Stdout,
             chunk
         } if chunk.contains("hello")
@@ -257,7 +259,7 @@ async fn allows_command_and_streams_output() -> Result<(), Box<dyn Error>> {
     assert!(matches!(
         messages.last(),
         Some(AgentMessage::Completed {
-            request_id: 1,
+            request_id: RequestId(1),
             exit_code: 0,
             timed_out: false,
             truncated: false
@@ -288,8 +290,8 @@ async fn rejects_unknown_command() -> Result<(), Box<dyn Error>> {
         &mut secure,
         &mut client_stream,
         &ClientMessage::Execute {
-            request_id: 2,
-            command_id: "does_not_exist".to_string(),
+            request_id: RequestId(2),
+            command_id: CommandId::new("does_not_exist").expect("valid command id"),
             args: BTreeMap::new(),
         },
     )
@@ -299,7 +301,7 @@ async fn rejects_unknown_command() -> Result<(), Box<dyn Error>> {
     assert!(matches!(
         messages.last(),
         Some(AgentMessage::Rejected {
-            request_id: 2,
+            request_id: RequestId(2),
             code: RejectionCode::UnknownCommand,
             ..
         })
@@ -334,8 +336,8 @@ async fn rejects_invalid_argument_value() -> Result<(), Box<dyn Error>> {
         &mut secure,
         &mut client_stream,
         &ClientMessage::Execute {
-            request_id: 3,
-            command_id: "echo".to_string(),
+            request_id: RequestId(3),
+            command_id: CommandId::new("echo").expect("valid command id"),
             args,
         },
     )
@@ -345,7 +347,7 @@ async fn rejects_invalid_argument_value() -> Result<(), Box<dyn Error>> {
     assert!(matches!(
         messages.last(),
         Some(AgentMessage::Rejected {
-            request_id: 3,
+            request_id: RequestId(3),
             code: RejectionCode::InvalidArgs,
             ..
         })
@@ -377,8 +379,8 @@ async fn times_out_long_running_command() -> Result<(), Box<dyn Error>> {
         &mut secure,
         &mut client_stream,
         &ClientMessage::Execute {
-            request_id: 4,
-            command_id: "sleep".to_string(),
+            request_id: RequestId(4),
+            command_id: CommandId::new("sleep").expect("valid command id"),
             args,
         },
     )
@@ -387,12 +389,14 @@ async fn times_out_long_running_command() -> Result<(), Box<dyn Error>> {
     let messages = receive_until_terminal(&mut secure, &mut client_stream).await?;
     assert!(matches!(
         messages[0],
-        AgentMessage::Started { request_id: 4 }
+        AgentMessage::Started {
+            request_id: RequestId(4)
+        }
     ));
     assert!(matches!(
         messages.last(),
         Some(AgentMessage::Completed {
-            request_id: 4,
+            request_id: RequestId(4),
             timed_out: true,
             ..
         })
@@ -425,8 +429,8 @@ async fn truncates_output_at_limit() -> Result<(), Box<dyn Error>> {
         &mut secure,
         &mut client_stream,
         &ClientMessage::Execute {
-            request_id: 5,
-            command_id: "flood".to_string(),
+            request_id: RequestId(5),
+            command_id: CommandId::new("flood").expect("valid command id"),
             args: BTreeMap::new(),
         },
     )
@@ -435,12 +439,14 @@ async fn truncates_output_at_limit() -> Result<(), Box<dyn Error>> {
     let messages = receive_until_terminal(&mut secure, &mut client_stream).await?;
     assert!(matches!(
         messages[0],
-        AgentMessage::Started { request_id: 5 }
+        AgentMessage::Started {
+            request_id: RequestId(5)
+        }
     ));
     assert!(messages.iter().any(|message| matches!(
         message,
         AgentMessage::Output {
-            request_id: 5,
+            request_id: RequestId(5),
             stream: OutputStream::Stdout,
             ..
         }
@@ -448,7 +454,7 @@ async fn truncates_output_at_limit() -> Result<(), Box<dyn Error>> {
     assert!(matches!(
         messages.last(),
         Some(AgentMessage::Completed {
-            request_id: 5,
+            request_id: RequestId(5),
             truncated: true,
             ..
         })

@@ -1,0 +1,21 @@
+services:
+  postgres18:
+    image: postgres:18
+    container_name: alaric-postgres18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: alaric
+      POSTGRES_PASSWORD: alaric
+      POSTGRES_DB: alaric
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U alaric -d alaric"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - alaric-pg18-data:/var/lib/postgresql
+
+volumes:
+  alaric-pg18-data:

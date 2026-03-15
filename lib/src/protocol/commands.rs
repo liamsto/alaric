@@ -5,14 +5,103 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{SecureChannel, SecureChannelError};
 
-pub type RequestId = u64;
+const MIN_COMMAND_ID_LEN: usize = 1;
+const MAX_COMMAND_ID_LEN: usize = 128;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RequestId(pub u64);
+
+impl From<u64> for RequestId {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl From<RequestId> for u64 {
+    fn from(value: RequestId) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Display for RequestId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandIdError(String);
+
+impl fmt::Display for CommandIdError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Error for CommandIdError {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CommandId(String);
+
+impl CommandId {
+    pub fn new(value: impl Into<String>) -> Result<Self, CommandIdError> {
+        let value = value.into();
+        let len = value.len();
+        if !(MIN_COMMAND_ID_LEN..=MAX_COMMAND_ID_LEN).contains(&len) {
+            return Err(CommandIdError(format!(
+                "command id must be between {} and {} characters",
+                MIN_COMMAND_ID_LEN, MAX_COMMAND_ID_LEN
+            )));
+        }
+        if !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        {
+            return Err(CommandIdError(
+                "command id contains invalid characters (allowed: a-z, A-Z, 0-9, '-', '_', '.')"
+                    .to_string(),
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for CommandId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Serialize for CommandId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for CommandId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
     Execute {
         request_id: RequestId,
-        command_id: String,
+        command_id: CommandId,
         args: BTreeMap<String, String>,
     },
 }
@@ -127,15 +216,15 @@ where
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{AgentMessage, ClientMessage, OutputStream, RejectionCode};
+    use super::{AgentMessage, ClientMessage, CommandId, OutputStream, RejectionCode, RequestId};
 
     #[test]
     fn client_message_round_trip() {
         let mut args = BTreeMap::new();
         args.insert("path".to_string(), "/tmp".to_string());
         let original = ClientMessage::Execute {
-            request_id: 42,
-            command_id: "list_dir".to_string(),
+            request_id: RequestId(42),
+            command_id: CommandId::new("list_dir").expect("valid command id"),
             args,
         };
 
@@ -149,7 +238,7 @@ mod tests {
     #[test]
     fn agent_message_round_trip() {
         let original = AgentMessage::Output {
-            request_id: 7,
+            request_id: RequestId(7),
             stream: OutputStream::Stdout,
             chunk: "hello".to_string(),
         };

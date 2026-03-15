@@ -8,9 +8,10 @@ use std::{
 use alaric_lib::{
     constants::DEFAULT_SERVER_PORT,
     protocol::{
-        AgentId, AgentMessage, ClientId, ClientMessage, HandshakeProofRequest, HandshakeRequest,
-        HandshakeResponse, OutputStream, SecureChannel, build_auth_proof_ed25519, read_json_frame,
-        recv_secure_json, send_secure_json, write_json_frame,
+        AgentId, AgentMessage, ClientId, ClientMessage, CommandId, HandshakeProofRequest,
+        HandshakeRequest, HandshakeResponse, OutputStream, RequestId, SecureChannel,
+        build_auth_proof_ed25519, read_json_frame, recv_secure_json, send_secure_json,
+        write_json_frame,
     },
     security::noise::types::Keypair,
 };
@@ -21,7 +22,7 @@ mod signal;
 
 #[derive(Debug)]
 struct CliArgs {
-    command_id: String,
+    command_id: CommandId,
     args: BTreeMap<String, String>,
 }
 
@@ -102,7 +103,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         HandshakeResponse::Accepted(accepted) => {
             info!(
                 "handshake accepted (client_id={}, target_agent_id={}, session_id={})",
-                client_id, target_agent_id, accepted.session_id.0
+                client_id, target_agent_id, accepted.session_id
             );
             HandshakeResponse::Accepted(accepted)
         }
@@ -119,7 +120,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         HandshakeResponse::Accepted(accepted) => {
             info!(
                 "handshake accepted (client_id={}, target_agent_id={}, session_id={})",
-                client_id, target_agent_id, accepted.session_id.0
+                client_id, target_agent_id, accepted.session_id
             );
         }
         HandshakeResponse::Rejected(rejected) => {
@@ -142,7 +143,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    let request_id = 1_u64;
+    let request_id = RequestId(1);
     let execute = ClientMessage::Execute {
         request_id,
         command_id: cli.command_id,
@@ -268,6 +269,12 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<CliParseOutc
     }
 
     let command_id = command_id.ok_or_else(|| "missing --command-id".to_string())?;
+    let command_id = CommandId::new(command_id).map_err(|err| {
+        format!(
+            "invalid command id provided via --command-id/COMMAND_ID: {}",
+            err
+        )
+    })?;
     Ok(CliParseOutcome::Run(CliArgs {
         command_id,
         args: parsed_args,

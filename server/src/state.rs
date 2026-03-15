@@ -1,12 +1,9 @@
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::{collections::HashMap, sync::Arc};
 
-use alaric_lib::protocol::{AgentId, SessionId};
+use alaric_lib::{
+    database::Database,
+    protocol::{AgentId, SessionId},
+};
 use tokio::{
     net::TcpStream,
     sync::{RwLock, oneshot},
@@ -15,25 +12,34 @@ use tokio::{
 use crate::auth::HandshakeAuthenticator;
 
 pub(crate) type AgentWaiter = oneshot::Sender<TcpStream>;
-pub(crate) type AgentRegistry = Arc<RwLock<HashMap<AgentId, AgentWaiter>>>;
+
+pub(crate) struct WaitingAgent {
+    pub(crate) session_id: SessionId,
+    pub(crate) waiter: AgentWaiter,
+}
+
+pub(crate) type AgentRegistry = Arc<RwLock<HashMap<AgentId, WaitingAgent>>>;
 
 #[derive(Clone)]
 pub(crate) struct ServerState {
     pub(crate) agents: AgentRegistry,
-    sessions: Arc<AtomicU64>,
     pub(crate) authenticator: Arc<HandshakeAuthenticator>,
+    pub(crate) database: Option<Arc<Database>>,
 }
 
 impl ServerState {
-    pub(crate) fn new(authenticator: HandshakeAuthenticator) -> Self {
+    pub(crate) fn new(
+        authenticator: HandshakeAuthenticator,
+        database: Option<Arc<Database>>,
+    ) -> Self {
         Self {
             agents: Arc::new(RwLock::new(HashMap::new())),
-            sessions: Arc::new(AtomicU64::new(1)),
             authenticator: Arc::new(authenticator),
+            database,
         }
     }
 
     pub(crate) fn next_session_id(&self) -> SessionId {
-        SessionId(self.sessions.fetch_add(1, Ordering::Relaxed))
+        SessionId::new_random()
     }
 }

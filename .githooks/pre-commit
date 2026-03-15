@@ -2,9 +2,83 @@
 set -euo pipefail
 
 echo "Running cargo fmt..."
+
+declare -A staged_files=()
+while IFS= read -r -d '' file; do
+  staged_files["$file"]=1
+done < <(git diff --cached --name-only -z)
+
+file_sig() {
+  local file="$1"
+  if [[ -e "$file" ]]; then
+    printf 'F:%s' "$(git hash-object -- "$file")"
+  else
+    printf 'D'
+  fi
+}
+
+declare -A unstaged_files=()
+declare -A pre_fmt_unstaged_sig=()
+while IFS= read -r -d '' file; do
+  unstaged_files["$file"]=1
+  pre_fmt_unstaged_sig["$file"]="$(file_sig "$file")"
+done < <(git diff --name-only -z)
+
+partially_staged=()
+for file in "${!staged_files[@]}"; do
+  if [[ -n "${unstaged_files[$file]+x}" ]]; then
+    partially_staged+=("$file")
+  fi
+done
+
+if ((${#partially_staged[@]} > 0)); then
+  echo "Cannot auto-format partially staged files:"
+  printf '  - %s\n' "${partially_staged[@]}"
+  echo "Stage or stash those files first, then commit again."
+  exit 1
+fi
+
 cargo fmt --all
 
-if ! git diff --quiet; then
-  echo "Formatting changes were made. Review and stage them, then commit again."
+if git diff --quiet; then
+  exit 0
+fi
+
+fmt_changed=()
+while IFS= read -r -d '' file; do
+  if [[ -n "${pre_fmt_unstaged_sig[$file]+x}" ]]; then
+    if [[ "$(file_sig "$file")" != "${pre_fmt_unstaged_sig[$file]}" ]]; then
+      fmt_changed+=("$file")
+    fi
+  else
+    fmt_changed+=("$file")
+  fi
+done < <(git diff --name-only -z)
+
+if ((${#fmt_changed[@]} == 0)); then
+  exit 0
+fi
+
+auto_staged=()
+needs_manual=()
+
+for file in "${fmt_changed[@]}"; do
+  if [[ -n "${staged_files[$file]+x}" ]]; then
+    git add -- "$file"
+    auto_staged+=("$file")
+  else
+    needs_manual+=("$file")
+  fi
+done
+
+if ((${#auto_staged[@]} > 0)); then
+  echo "Auto-staged formatting changes:"
+  printf '  - %s\n' "${auto_staged[@]}"
+fi
+
+if ((${#needs_manual[@]} > 0)); then
+  echo "Formatting also changed unstaged files:"
+  printf '  - %s\n' "${needs_manual[@]}"
+  echo "Review/stage those files and commit again."
   exit 1
 fi
