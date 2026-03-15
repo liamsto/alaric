@@ -193,41 +193,47 @@ async fn handle_agent(
     let session_id = state.next_session_id();
     let agent_request = HandshakeRequest::agent(agent_id.clone());
     let (tx, mut rx) = oneshot::channel::<TcpStream>();
-    {
+    let duplicate_agent = {
         let mut registry = state.agents.write().await;
         if registry.contains_key(&agent_id) {
-            if let Some(database) = &state.database
-                && let Err(store_err) = database
-                    .record_session_rejection(
-                        SessionId::new_random(),
-                        Some(&agent_request),
-                        HandshakeErrorCode::AgentIdInUse,
-                        &format!("agent id '{}' is already connected", agent_id),
-                        peer,
-                    )
-                    .await
-            {
-                warn!("failed to persist duplicate-agent rejection: {}", store_err);
-            }
-            send_reject(
-                &mut stream,
-                HandshakeErrorCode::AgentIdInUse,
-                format!("agent id '{}' is already connected", agent_id),
-            )
-            .await?;
-            warn!(
-                "rejected agent {} from {}: id already in use",
-                agent_id, peer
+            true
+        } else {
+            registry.insert(
+                agent_id.clone(),
+                WaitingAgent {
+                    session_id,
+                    waiter: tx,
+                },
             );
-            return Ok(());
+            false
         }
-        registry.insert(
-            agent_id.clone(),
-            WaitingAgent {
-                session_id,
-                waiter: tx,
-            },
+    };
+
+    if duplicate_agent {
+        if let Some(database) = &state.database
+            && let Err(store_err) = database
+                .record_session_rejection(
+                    SessionId::new_random(),
+                    Some(&agent_request),
+                    HandshakeErrorCode::AgentIdInUse,
+                    &format!("agent id '{}' is already connected", agent_id),
+                    peer,
+                )
+                .await
+        {
+            warn!("failed to persist duplicate-agent rejection: {}", store_err);
+        }
+        send_reject(
+            &mut stream,
+            HandshakeErrorCode::AgentIdInUse,
+            format!("agent id '{}' is already connected", agent_id),
+        )
+        .await?;
+        warn!(
+            "rejected agent {} from {}: id already in use",
+            agent_id, peer
         );
+        return Ok(());
     }
 
     if let Err(err) = send_accept(&mut stream, session_id).await {
@@ -259,6 +265,7 @@ async fn handle_agent(
                                 session_id,
                                 &agent_id,
                                 "agent disconnected before client pairing",
+                                true,
                             )
                             .await
                         {
@@ -300,6 +307,7 @@ async fn handle_agent(
                         session_id,
                         &agent_id,
                         "agent disconnected before client pairing",
+                        true,
                     )
                     .await
                 {
@@ -310,7 +318,8 @@ async fn handle_agent(
     };
 
     info!("paired client tunnel with agent {} from {}", agent_id, peer);
-    match copy_bidirectional(&mut stream, &mut client_stream).await {
+    let tunnel_result = copy_bidirectional(&mut stream, &mut client_stream).await;
+    match &tunnel_result {
         Ok((agent_to_client, client_to_agent)) => {
             info!(
                 "tunnel closed for agent {}: {} bytes agent->client, {} bytes client->agent",
@@ -324,14 +333,17 @@ async fn handle_agent(
 
     state.agents.write().await.remove(&agent_id);
     if let Some(database) = &state.database {
+        let mark_disconnect_as_error = tunnel_result.is_err();
         if let Err(store_err) = database
-            .record_agent_disconnected(session_id, &agent_id, "agent disconnected")
+            .record_agent_disconnected(
+                session_id,
+                &agent_id,
+                "agent disconnected",
+                mark_disconnect_as_error,
+            )
             .await
         {
             warn!("failed to persist agent disconnection: {}", store_err);
-        }
-        if let Err(store_err) = database.record_session_completed(session_id).await {
-            warn!("failed to persist session completion: {}", store_err);
         }
     }
     info!("agent disconnected: {} (agent_id={})", peer, agent_id);
