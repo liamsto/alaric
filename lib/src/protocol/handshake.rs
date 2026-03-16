@@ -45,6 +45,11 @@ pub enum HandshakeRequest {
         target_agent_id: AgentId,
         metadata: BTreeMap<String, String>,
     },
+    ClientDiscovery {
+        protocol_version: u16,
+        client_id: ClientId,
+        metadata: BTreeMap<String, String>,
+    },
 }
 
 impl HandshakeRequest {
@@ -65,12 +70,23 @@ impl HandshakeRequest {
         }
     }
 
+    pub fn client_discovery(client_id: ClientId) -> Self {
+        Self::ClientDiscovery {
+            protocol_version: PROTOCOL_VERSION,
+            client_id,
+            metadata: BTreeMap::new(),
+        }
+    }
+
     pub fn protocol_version(&self) -> u16 {
         match self {
             HandshakeRequest::Agent {
                 protocol_version, ..
             } => *protocol_version,
             HandshakeRequest::Client {
+                protocol_version, ..
+            } => *protocol_version,
+            HandshakeRequest::ClientDiscovery {
                 protocol_version, ..
             } => *protocol_version,
         }
@@ -80,6 +96,7 @@ impl HandshakeRequest {
         match self {
             HandshakeRequest::Agent { .. } => Role::Agent,
             HandshakeRequest::Client { .. } => Role::Client,
+            HandshakeRequest::ClientDiscovery { .. } => Role::Client,
         }
     }
 }
@@ -234,6 +251,9 @@ enum AuthPrincipal<'a> {
         client_id: &'a ClientId,
         target_agent_id: &'a AgentId,
     },
+    ClientDiscovery {
+        client_id: &'a ClientId,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -324,6 +344,9 @@ fn signing_payload(
             client_id,
             target_agent_id,
         },
+        HandshakeRequest::ClientDiscovery { client_id, .. } => {
+            AuthPrincipal::ClientDiscovery { client_id }
+        }
     };
 
     serde_json::to_vec(&AuthSigningPayload {

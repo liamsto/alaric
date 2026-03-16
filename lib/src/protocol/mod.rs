@@ -1,4 +1,5 @@
 mod commands;
+mod discovery;
 mod framing;
 mod handshake;
 mod ids;
@@ -8,6 +9,7 @@ pub use commands::{
     AgentMessage, ClientMessage, CommandId, CommandIdError, CommandProtocolError, OutputStream,
     RejectionCode, RequestId, recv_secure_json, send_secure_json,
 };
+pub use discovery::{AgentDiscoveryEntry, AgentPresenceStatus, ListAgentsResponse};
 pub use framing::{
     MAX_FRAME_BYTES, ProtocolError, read_bytes_frame, read_json_frame, write_bytes_frame,
     write_json_frame,
@@ -43,5 +45,12 @@ mod tests {
         let agent_id = AgentId::new("agent-main").expect("valid agent id");
         let request = HandshakeRequest::agent(agent_id);
         assert_eq!(request.role().as_str(), "agent");
+    }
+
+    #[test]
+    fn client_discovery_helpers_set_expected_role() {
+        let client_id = ClientId::new("client-main").expect("valid client id");
+        let request = HandshakeRequest::client_discovery(client_id);
+        assert_eq!(request.role().as_str(), "client");
     }
 }

@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use std::{env, time::Duration};
+use std::{collections::BTreeSet, env, time::Duration};
 
 use alaric_agent::{policy::Policy, session::run_secure_session};
 use alaric_lib::constants::DEFAULT_SERVER_PORT;
@@ -13,6 +13,8 @@ use tokio::{net::TcpStream, time::sleep};
 use tracing::{error, info};
 
 mod signal;
+
+const AGENT_TAGS_ENV: &str = "AGENT_TAGS";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -85,7 +87,7 @@ async fn connection_loop(
     policy: &Policy,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     info!("connected to {}", stream.peer_addr()?);
-    let request = HandshakeRequest::agent(agent_id.clone());
+    let request = agent_handshake_request(agent_id.clone(), policy);
     write_json_frame(&mut stream, &request).await?;
 
     let challenge = match read_json_frame::<_, HandshakeResponse>(&mut stream).await? {
@@ -133,4 +135,45 @@ async fn connection_loop(
 
     run_secure_session(&mut stream, policy, Keypair::default_keypair()).await?;
     Ok(())
+}
+
+fn agent_handshake_request(agent_id: AgentId, policy: &Policy) -> HandshakeRequest {
+    let mut request = HandshakeRequest::agent(agent_id);
+    let capabilities = collect_capabilities(policy);
+    let tags = parse_csv_values(env::var(AGENT_TAGS_ENV).ok());
+
+    if let HandshakeRequest::Agent { metadata, .. } = &mut request {
+        if !capabilities.is_empty() {
+            metadata.insert("capabilities".to_string(), capabilities.join(","));
+        }
+        if !tags.is_empty() {
+            metadata.insert("tags".to_string(), tags.join(","));
+        }
+    }
+
+    request
+}
+
+fn collect_capabilities(policy: &Policy) -> Vec<String> {
+    let mut capabilities = BTreeSet::new();
+    for command in &policy.commands {
+        let command_id = command.id.trim();
+        if !command_id.is_empty() {
+            capabilities.insert(command_id.to_string());
+        }
+    }
+    capabilities.into_iter().collect()
+}
+
+fn parse_csv_values(raw: Option<String>) -> Vec<String> {
+    let mut values = BTreeSet::new();
+    if let Some(raw) = raw {
+        for value in raw.split(',') {
+            let value = value.trim();
+            if !value.is_empty() {
+                values.insert(value.to_string());
+            }
+        }
+    }
+    values.into_iter().collect()
 }

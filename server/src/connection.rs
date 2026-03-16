@@ -1,20 +1,31 @@
-use std::net::SocketAddr;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::SocketAddr,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use crate::{
     error::BoxError,
     responses::{send_accept, send_challenge, send_reject},
     state::{ServerState, WaitingAgent},
 };
+use alaric_lib::database::Database;
 use alaric_lib::protocol::{
-    AgentId, ClientId, HandshakeErrorCode, HandshakeProofRequest, HandshakeRequest,
-    PROTOCOL_VERSION, SessionId, read_json_frame,
+    AgentDiscoveryEntry, AgentId, AgentPresenceStatus, ClientId, HandshakeErrorCode,
+    HandshakeProofRequest, HandshakeRequest, ListAgentsResponse, PROTOCOL_VERSION, SessionId,
+    read_json_frame, write_json_frame,
 };
+use serde_json::Value;
 use tokio::{
     io::{AsyncReadExt, copy_bidirectional},
     net::TcpStream,
-    sync::oneshot,
+    sync::{oneshot, watch},
+    time::{Duration, MissedTickBehavior, interval},
 };
 use tracing::{info, warn};
+
+const PRESENCE_HEARTBEAT_INTERVAL_SECS: u64 = 10;
 
 pub(crate) async fn handle_connection(
     mut stream: TcpStream,
@@ -85,7 +96,8 @@ pub(crate) async fn handle_connection(
         return Ok(());
     }
 
-    let challenge = match state.authenticator.issue_challenge(&request).await {
+    let authenticator = state.authenticator_snapshot().await;
+    let challenge = match authenticator.issue_challenge(&request).await {
         Ok(challenge) => challenge,
         Err(err) => {
             if let Some(database) = &state.database
@@ -144,8 +156,7 @@ pub(crate) async fn handle_connection(
         }
     };
 
-    if let Err(err) = state
-        .authenticator
+    if let Err(err) = authenticator
         .authenticate(&request, &challenge, &proof_request)
         .await
     {
@@ -173,14 +184,17 @@ pub(crate) async fn handle_connection(
     }
 
     match request {
-        HandshakeRequest::Agent { agent_id, .. } => {
-            handle_agent(stream, state, peer, agent_id).await
-        }
+        HandshakeRequest::Agent {
+            agent_id, metadata, ..
+        } => handle_agent(stream, state, peer, agent_id, metadata).await,
         HandshakeRequest::Client {
             client_id,
             target_agent_id,
             ..
         } => handle_client(stream, state, peer, client_id, target_agent_id).await,
+        HandshakeRequest::ClientDiscovery { client_id, .. } => {
+            handle_client_discovery(stream, state, peer, client_id).await
+        }
     }
 }
 
@@ -189,9 +203,11 @@ async fn handle_agent(
     state: ServerState,
     peer: SocketAddr,
     agent_id: AgentId,
+    handshake_metadata: BTreeMap<String, String>,
 ) -> Result<(), BoxError> {
     let session_id = state.next_session_id();
     let agent_request = HandshakeRequest::agent(agent_id.clone());
+    let presence_metadata = build_presence_metadata(&handshake_metadata);
     let (tx, mut rx) = oneshot::channel::<TcpStream>();
     let duplicate_agent = {
         let mut registry = state.agents.write().await;
@@ -242,11 +258,13 @@ async fn handle_agent(
     }
     if let Some(database) = &state.database
         && let Err(store_err) = database
-            .record_agent_waiting(session_id, &agent_id, peer)
+            .record_agent_waiting(session_id, &agent_id, &presence_metadata, peer)
             .await
     {
         warn!("failed to persist agent waiting state: {}", store_err);
     }
+    let heartbeat_shutdown =
+        spawn_presence_heartbeat(state.database.clone(), session_id, agent_id.clone());
     info!(
         "agent connected: {} (agent_id={}, session_id={}); waiting for client",
         peer, agent_id, session_id
@@ -275,6 +293,7 @@ async fn handle_agent(
                         "agent {} from {} disconnected before client pairing",
                         agent_id, peer
                     );
+                    stop_presence_heartbeat(&heartbeat_shutdown);
                     return Ok(());
                 }
             }
@@ -313,6 +332,7 @@ async fn handle_agent(
                 {
                     warn!("failed to persist pre-pairing disconnect: {}", store_err);
                 }
+            stop_presence_heartbeat(&heartbeat_shutdown);
             return Ok(());
         }
     };
@@ -331,6 +351,7 @@ async fn handle_agent(
         }
     }
 
+    stop_presence_heartbeat(&heartbeat_shutdown);
     state.agents.write().await.remove(&agent_id);
     if let Some(database) = &state.database {
         let mark_disconnect_as_error = tunnel_result.is_err();
@@ -425,4 +446,148 @@ async fn handle_client(
     }
 
     Ok(())
+}
+
+async fn handle_client_discovery(
+    mut stream: TcpStream,
+    state: ServerState,
+    peer: SocketAddr,
+    client_id: ClientId,
+) -> Result<(), BoxError> {
+    let discovery_request = HandshakeRequest::client_discovery(client_id.clone());
+    let discovered_agents = if let Some(database) = &state.database {
+        match database.list_discoverable_agents().await {
+            Ok(agents) => agents,
+            Err(err) => {
+                warn!("failed to load discoverable agents: {}", err);
+                if let Err(store_err) = database
+                    .record_session_rejection(
+                        SessionId::new_random(),
+                        Some(&discovery_request),
+                        HandshakeErrorCode::InternalError,
+                        &format!("failed to list agents: {}", err),
+                        peer,
+                    )
+                    .await
+                {
+                    warn!("failed to persist discovery-list rejection: {}", store_err);
+                }
+                send_reject(
+                    &mut stream,
+                    HandshakeErrorCode::InternalError,
+                    "failed to list agents",
+                )
+                .await?;
+                return Ok(());
+            }
+        }
+    } else {
+        list_discoverable_agents_from_registry(&state).await
+    };
+
+    let session_id = state.next_session_id();
+    send_accept(&mut stream, session_id).await?;
+
+    if let Some(database) = &state.database
+        && let Err(store_err) = database
+            .record_client_discovery(session_id, &client_id, peer)
+            .await
+    {
+        warn!("failed to persist client discovery session: {}", store_err);
+    }
+
+    let response = ListAgentsResponse::new(current_unix_timestamp()?, discovered_agents);
+    write_json_frame(&mut stream, &response).await?;
+    info!(
+        "client discovery completed: {} (client_id={}, session_id={}, agents={})",
+        peer,
+        client_id,
+        session_id,
+        response.agents.len()
+    );
+    Ok(())
+}
+
+fn spawn_presence_heartbeat(
+    database: Option<Arc<Database>>,
+    session_id: SessionId,
+    agent_id: AgentId,
+) -> Option<watch::Sender<bool>> {
+    let Some(database) = database else {
+        return None;
+    };
+
+    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+    tokio::spawn(async move {
+        let mut ticker = interval(Duration::from_secs(PRESENCE_HEARTBEAT_INTERVAL_SECS));
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    if let Err(err) = database.record_agent_heartbeat(session_id, &agent_id).await {
+                        warn!("failed to persist agent heartbeat (agent_id={}): {}", agent_id, err);
+                    }
+                }
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    Some(shutdown_tx)
+}
+
+fn stop_presence_heartbeat(shutdown: &Option<watch::Sender<bool>>) {
+    if let Some(shutdown) = shutdown {
+        let _ = shutdown.send(true);
+    }
+}
+
+async fn list_discoverable_agents_from_registry(state: &ServerState) -> Vec<AgentDiscoveryEntry> {
+    let registry = state.agents.read().await;
+    let mut agent_ids = registry.keys().cloned().collect::<Vec<_>>();
+    agent_ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+
+    agent_ids
+        .into_iter()
+        .map(|agent_id| AgentDiscoveryEntry {
+            agent_id,
+            display_name: None,
+            capabilities: Vec::new(),
+            tags: Vec::new(),
+            status: AgentPresenceStatus::Online,
+            status_age_secs: 0,
+        })
+        .collect()
+}
+
+fn build_presence_metadata(handshake_metadata: &BTreeMap<String, String>) -> Value {
+    let capabilities = parse_csv_metadata(handshake_metadata.get("capabilities"));
+    let tags = parse_csv_metadata(handshake_metadata.get("tags"));
+
+    serde_json::json!({
+        "capabilities": capabilities,
+        "tags": tags,
+    })
+}
+
+fn parse_csv_metadata(raw: Option<&String>) -> Vec<String> {
+    let mut out = BTreeSet::new();
+    if let Some(raw) = raw {
+        for value in raw.split(',') {
+            let value = value.trim();
+            if !value.is_empty() {
+                out.insert(value.to_string());
+            }
+        }
+    }
+
+    out.into_iter().collect()
+}
+
+fn current_unix_timestamp() -> Result<u64, BoxError> {
+    Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
 }

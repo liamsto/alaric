@@ -95,7 +95,7 @@ impl HandshakeAuthenticator {
 
     pub async fn from_database(database: &Database) -> Result<Self, HandshakeAuthError> {
         let rows = database
-            .load_active_principal_keys()
+            .load_principal_keys()
             .await
             .map_err(|err| HandshakeAuthError::Database(err.to_string()))?;
 
@@ -230,6 +230,14 @@ impl HandshakeAuthenticator {
                 })
             }
             HandshakeRequest::Client { client_id, .. } => {
+                self.client_keys.get(client_id).ok_or_else(|| {
+                    HandshakeAuthError::Unauthorized(format!(
+                        "client '{}' is not authorized",
+                        client_id
+                    ))
+                })
+            }
+            HandshakeRequest::ClientDiscovery { client_id, .. } => {
                 self.client_keys.get(client_id).ok_or_else(|| {
                     HandshakeAuthError::Unauthorized(format!(
                         "client '{}' is not authorized",
