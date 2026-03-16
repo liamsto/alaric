@@ -1,5 +1,6 @@
 mod admin_store;
 pub mod agents;
+mod auth_listener;
 pub mod command_runs;
 pub mod principals;
 mod server_store;
@@ -9,6 +10,7 @@ pub use admin_store::{
     AdminStoreError, KeyAddOutcome, KeyRevokeOutcome, KeyRotateOutcome, PrincipalAddOutcome,
     PrincipalDisableOutcome, PrincipalListEntry,
 };
+pub use auth_listener::{AuthConfigListener, AuthConfigListenerError, AuthConfigNotification};
 pub use server_store::{ActivePrincipalKey, PruneLogsResult, ServerStoreError};
 
 use std::{error::Error, fmt, time::Duration};

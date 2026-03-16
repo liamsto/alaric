@@ -12,7 +12,7 @@ use crate::{
 };
 use alaric_lib::database::{Database, DatabaseConfig, LogRetentionDays};
 use tokio::net::TcpListener;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 pub async fn run(listener: TcpListener) -> Result<(), BoxError> {
     run_until(listener, pending::<()>()).await
@@ -50,12 +50,19 @@ pub async fn run_until_with_auth_and_db(
 ) -> Result<(), BoxError> {
     let local_addr = listener.local_addr()?;
     let state = ServerState::new(authenticator, database);
+    let mut auth_refresh_task = state
+        .database
+        .clone()
+        .map(|database| tokio::spawn(run_auth_refresh_listener(state.clone(), database)));
     tokio::pin!(shutdown);
 
     info!("server listening on {}", local_addr);
     loop {
         tokio::select! {
             _ = &mut shutdown => {
+                if let Some(task) = auth_refresh_task.take() {
+                    task.abort();
+                }
                 info!("shutdown signal received, stopping server accept loop");
                 return Ok(());
             }
@@ -75,6 +82,57 @@ pub async fn run_until_with_auth_and_db(
                 }
             }
         }
+    }
+}
+
+async fn run_auth_refresh_listener(state: ServerState, database: Arc<Database>) {
+    const RECONNECT_DELAY_SECS: u64 = 1;
+
+    loop {
+        let mut listener = match database.listen_for_auth_config_changes().await {
+            Ok(listener) => listener,
+            Err(err) => {
+                warn!(
+                    "failed to connect postgres listener for auth refresh: {}; retrying",
+                    err
+                );
+                tokio::time::sleep(Duration::from_secs(RECONNECT_DELAY_SECS)).await;
+                continue;
+            }
+        };
+
+        info!("listening for auth config changes on postgres");
+
+        loop {
+            let notification = match listener.recv().await {
+                Ok(notification) => notification,
+                Err(err) => {
+                    warn!(
+                        "postgres auth-listener receive error: {}; reconnecting",
+                        err
+                    );
+                    break;
+                }
+            };
+
+            match HandshakeAuthenticator::from_database(&database).await {
+                Ok(authenticator) => {
+                    state.replace_authenticator(authenticator).await;
+                    info!(
+                        "reloaded handshake authenticator after notification {}:{}",
+                        notification.channel, notification.payload
+                    );
+                }
+                Err(err) => {
+                    warn!(
+                        "failed to reload handshake authenticator after notification {}:{}: {}",
+                        notification.channel, notification.payload, err
+                    );
+                }
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(RECONNECT_DELAY_SECS)).await;
     }
 }
 
