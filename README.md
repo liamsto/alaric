@@ -72,6 +72,7 @@ source ./.dev-auth.env
 AGENT_ID=agent-default \
 AGENT_POLICY_PATH=./agent-policy.json \
 AGENT_POLICY_KEYS_PATH=./policy-keys.json \
+AGENT_TAGS=local,dev \
 cargo run -p alaric-agent
 ```
 
@@ -85,6 +86,15 @@ TARGET_AGENT_ID=agent-default \
 cargo run -p alaric-client -- \
   --command-id echo_text \
   --arg text=hello
+```
+
+List online agents:
+
+```bash
+source ./.dev-auth.env
+
+CLIENT_ID=client-local \
+cargo run -p alaric-client -- list-agents
 ```
 
 6. Basic admin tasks (examples):
@@ -107,6 +117,8 @@ cargo run -q -p alaric-admin -- key rotate agent agent-default agent-default-v2 
 Client usage:
 
 ```text
+alaric-client list-agents
+alaric-client run --command-id <id> [--arg name=value]...
 alaric-client --command-id <id> [--arg name=value]...
 ```
 
@@ -116,6 +128,7 @@ Notes:
 - The server does not inspect command messages and is generally blind to traffic, policy enforcement is handled by the agent.
 - Handshake auth uses server-issued nonce challenges and Ed25519 signatures over handshake context.
 - Server handshake authorization is loaded from PostgreSQL (`principals` + `principal_keys`).
+- Server handshake authorization hot-reloads from PostgreSQL via `LISTEN/NOTIFY` on auth config changes.
 - The generated `server-auth.json` is still useful as local key material, but runtime authorization is DB-backed.
 - Generated local files `server-auth.json` and `.dev-auth.env` are gitignored by default.
 
