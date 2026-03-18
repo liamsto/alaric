@@ -1,8 +1,10 @@
 use std::{env, error::Error, io, time::Duration};
 
 use alaric_lib::database::{
-    AgentGroupDeleteOutcome, AgentGroupUpsertOutcome, Database, DatabaseConfig, KeyAddOutcome,
-    KeyRevokeOutcome, PrincipalAddOutcome, PrincipalDisableOutcome, principals::PrincipalKind,
+    AgentGroupCreateOutcome, AgentGroupDeleteOutcome, AgentGroupMemberAddOutcome,
+    AgentGroupMemberRemoveOutcome, AgentGroupMoveOutcome, AgentGroupSetNameOutcome, Database,
+    DatabaseConfig, KeyAddOutcome, KeyRevokeOutcome, PrincipalAddOutcome, PrincipalDisableOutcome,
+    principals::PrincipalKind,
 };
 
 #[derive(Debug)]
@@ -42,10 +44,26 @@ enum Command {
         external_id: String,
         key_id: String,
     },
-    GroupUpsert {
-        external_id: String,
+    GroupCreate {
+        group_id: String,
         display_name: Option<String>,
-        members: Vec<String>,
+    },
+    GroupAdd {
+        group_id: String,
+        agent_id: String,
+    },
+    GroupRemove {
+        group_id: String,
+        agent_id: String,
+    },
+    GroupMove {
+        old_group_id: String,
+        new_group_id: String,
+        agent_id: String,
+    },
+    GroupSetName {
+        group_id: String,
+        display_name: String,
     },
     GroupDelete {
         external_id: String,
@@ -301,24 +319,142 @@ async fn run_command(
                 }
             }
         }
-        Command::GroupUpsert {
-            external_id,
+        Command::GroupCreate {
+            group_id,
             display_name,
-            members,
         } => {
             let outcome = database
-                .admin_upsert_agent_group(&external_id, display_name.as_deref(), &members)
+                .admin_create_agent_group(&group_id, display_name.as_deref())
                 .await?;
-            let action = match outcome {
-                AgentGroupUpsertOutcome::Created => "created",
-                AgentGroupUpsertOutcome::Updated => "updated",
-            };
-            println!(
-                "group {}: id={}, members={}",
-                action,
-                external_id,
-                members.join(",")
-            );
+            match outcome {
+                AgentGroupCreateOutcome::Created => {
+                    println!("group created: id={}", group_id);
+                }
+                AgentGroupCreateOutcome::AlreadyExists => {
+                    println!("group already exists (no action): id={}", group_id);
+                }
+            }
+        }
+        Command::GroupAdd { group_id, agent_id } => {
+            let outcome = database
+                .admin_add_agent_to_group(&group_id, &agent_id)
+                .await?;
+            match outcome {
+                AgentGroupMemberAddOutcome::Added => {
+                    println!(
+                        "agent added to group: group_id={}, agent_id={}",
+                        group_id, agent_id
+                    );
+                }
+                AgentGroupMemberAddOutcome::AlreadyMember => {
+                    println!(
+                        "agent already in group (no action): group_id={}, agent_id={}",
+                        group_id, agent_id
+                    );
+                }
+                AgentGroupMemberAddOutcome::GroupNotFound => {
+                    println!("group not found: id={}", group_id);
+                }
+                AgentGroupMemberAddOutcome::AgentNotFound => {
+                    println!("agent not found or disabled: id={}", agent_id);
+                }
+            }
+        }
+        Command::GroupRemove { group_id, agent_id } => {
+            let outcome = database
+                .admin_remove_agent_from_group(&group_id, &agent_id)
+                .await?;
+            match outcome {
+                AgentGroupMemberRemoveOutcome::Removed => {
+                    println!(
+                        "agent removed from group: group_id={}, agent_id={}",
+                        group_id, agent_id
+                    );
+                }
+                AgentGroupMemberRemoveOutcome::NotMember => {
+                    println!(
+                        "agent not in group (no action): group_id={}, agent_id={}",
+                        group_id, agent_id
+                    );
+                }
+                AgentGroupMemberRemoveOutcome::GroupNotFound => {
+                    println!("group not found: id={}", group_id);
+                }
+                AgentGroupMemberRemoveOutcome::AgentNotFound => {
+                    println!("agent not found or disabled: id={}", agent_id);
+                }
+            }
+        }
+        Command::GroupMove {
+            old_group_id,
+            new_group_id,
+            agent_id,
+        } => {
+            let outcome = database
+                .admin_move_agent_between_groups(&old_group_id, &new_group_id, &agent_id)
+                .await?;
+            match outcome {
+                AgentGroupMoveOutcome::Moved {
+                    removed_from_old_group,
+                    added_to_new_group,
+                } => match (removed_from_old_group, added_to_new_group) {
+                    (true, true) => {
+                        println!(
+                            "agent moved: agent_id={}, from={}, to={}",
+                            agent_id, old_group_id, new_group_id
+                        );
+                    }
+                    (true, false) => {
+                        println!(
+                            "agent removed from old group; already in destination group: agent_id={}, from={}, to={}",
+                            agent_id, old_group_id, new_group_id
+                        );
+                    }
+                    (false, true) => {
+                        println!(
+                            "agent added to destination group; was not in source group: agent_id={}, from={}, to={}",
+                            agent_id, old_group_id, new_group_id
+                        );
+                    }
+                    (false, false) => {
+                        println!(
+                            "no move performed (already absent from source and present in destination): agent_id={}, from={}, to={}",
+                            agent_id, old_group_id, new_group_id
+                        );
+                    }
+                },
+                AgentGroupMoveOutcome::SourceGroupNotFound => {
+                    println!("source group not found: id={}", old_group_id);
+                }
+                AgentGroupMoveOutcome::DestinationGroupNotFound => {
+                    println!("destination group not found: id={}", new_group_id);
+                }
+                AgentGroupMoveOutcome::AgentNotFound => {
+                    println!("agent not found or disabled: id={}", agent_id);
+                }
+                AgentGroupMoveOutcome::SameGroup => {
+                    println!(
+                        "source and destination groups are identical (no action): id={}",
+                        old_group_id
+                    );
+                }
+            }
+        }
+        Command::GroupSetName {
+            group_id,
+            display_name,
+        } => {
+            let outcome = database
+                .admin_set_agent_group_name(&group_id, &display_name)
+                .await?;
+            match outcome {
+                AgentGroupSetNameOutcome::Updated => {
+                    println!("group display name updated: id={}", group_id);
+                }
+                AgentGroupSetNameOutcome::GroupNotFound => {
+                    println!("group not found: id={}", group_id);
+                }
+            }
         }
         Command::GroupDelete { external_id } => {
             let outcome = database.admin_delete_agent_group(&external_id).await?;
@@ -503,17 +639,16 @@ fn parse_group_command(args: &[String]) -> Result<Command, String> {
     }
 
     match args[0].as_str() {
-        "upsert" => {
+        "create" => {
             if args.len() < 2 {
                 return Err(
-                    "group upsert requires: group upsert <group_id> [--display-name <name>] [--member <agent_id>]..."
+                    "group create requires: group create <group_id> [--display-name <name>]"
                         .to_string(),
                 );
             }
 
-            let external_id = args[1].clone();
+            let group_id = args[1].clone();
             let mut display_name = None;
-            let mut members = Vec::new();
             let mut index = 2usize;
             while index < args.len() {
                 match args[index].as_str() {
@@ -524,23 +659,57 @@ fn parse_group_command(args: &[String]) -> Result<Command, String> {
                         display_name = Some(value.clone());
                         index += 2;
                     }
-                    "--member" => {
-                        let Some(value) = args.get(index + 1) else {
-                            return Err("--member requires an agent id value".to_string());
-                        };
-                        members.push(value.clone());
-                        index += 2;
-                    }
                     other => {
                         return Err(format!("unknown argument '{}'", other));
                     }
                 }
             }
 
-            Ok(Command::GroupUpsert {
-                external_id,
+            Ok(Command::GroupCreate {
+                group_id,
                 display_name,
-                members,
+            })
+        }
+        "add" => {
+            if args.len() != 3 {
+                return Err("group add requires: group add <group_id> <agent_id>".to_string());
+            }
+            Ok(Command::GroupAdd {
+                group_id: args[1].clone(),
+                agent_id: args[2].clone(),
+            })
+        }
+        "remove" => {
+            if args.len() != 3 {
+                return Err("group remove requires: group remove <group_id> <agent_id>".to_string());
+            }
+            Ok(Command::GroupRemove {
+                group_id: args[1].clone(),
+                agent_id: args[2].clone(),
+            })
+        }
+        "move" => {
+            if args.len() != 4 {
+                return Err(
+                    "group move requires: group move <old_group_id> <new_group_id> <agent_id>"
+                        .to_string(),
+                );
+            }
+            Ok(Command::GroupMove {
+                old_group_id: args[1].clone(),
+                new_group_id: args[2].clone(),
+                agent_id: args[3].clone(),
+            })
+        }
+        "set-name" => {
+            if args.len() != 3 {
+                return Err(
+                    "group set-name requires: group set-name <group_id> <display_name>".to_string(),
+                );
+            }
+            Ok(Command::GroupSetName {
+                group_id: args[1].clone(),
+                display_name: args[2].clone(),
             })
         }
         "delete" => {
@@ -581,15 +750,19 @@ const fn principal_kind_name(kind: PrincipalKind) -> &'static str {
 
 fn usage_text() -> &'static str {
     "Usage:
-  alaric-admin principal add <agent|client> <external_id> [--display-name <name>]
-  alaric-admin principal disable <agent|client> <external_id>
-  alaric-admin principal list [agent|client|all]
-  alaric-admin key add <agent|client> <external_id> <key_id> <public_key_hex>
-  alaric-admin key rotate <agent|client> <external_id> <new_key_id> <new_public_key_hex>
-  alaric-admin key revoke <agent|client> <external_id> <key_id>
-  alaric-admin group upsert <group_id> [--display-name <name>] [--member <agent_id>]...
-  alaric-admin group delete <group_id>
-  alaric-admin group list
+  aadmin principal add <agent|client> <external_id> [--display-name <name>]
+  aadmin principal disable <agent|client> <external_id>
+  aadmin principal list [agent|client|all]
+  aadmin key add <agent|client> <external_id> <key_id> <public_key_hex>
+  aadmin key rotate <agent|client> <external_id> <new_key_id> <new_public_key_hex>
+  aadmin key revoke <agent|client> <external_id> <key_id>
+  aadmin group create <group_id> [--display-name <name>]
+  aadmin group add <group_id> <agent_id>
+  aadmin group remove <group_id> <agent_id>
+  aadmin group move <old_group_id> <new_group_id> <agent_id>
+  aadmin group set-name <group_id> <display_name>
+  aadmin group delete <group_id>
+  aadmin group list
 
 Environment:
   DATABASE_URL                   Required postgres URL
@@ -683,31 +856,100 @@ mod tests {
     }
 
     #[test]
-    fn parses_group_upsert_with_members() {
+    fn parses_group_create_with_display_name() {
         let args = vec![
             "group".to_string(),
-            "upsert".to_string(),
+            "create".to_string(),
             "ca-west-prod01".to_string(),
             "--display-name".to_string(),
             "CA West".to_string(),
-            "--member".to_string(),
-            "agent-a".to_string(),
-            "--member".to_string(),
-            "agent-b".to_string(),
         ];
 
-        let parsed = parse_cli_args(args).expect("group upsert should parse");
-        let CliParseOutcome::Run(Command::GroupUpsert {
-            external_id,
+        let parsed = parse_cli_args(args).expect("group create should parse");
+        let CliParseOutcome::Run(Command::GroupCreate {
+            group_id,
             display_name,
-            members,
         }) = parsed
         else {
             panic!("unexpected command parse result");
         };
-        assert_eq!(external_id, "ca-west-prod01");
+        assert_eq!(group_id, "ca-west-prod01");
         assert_eq!(display_name.as_deref(), Some("CA West"));
-        assert_eq!(members, vec!["agent-a".to_string(), "agent-b".to_string()]);
+    }
+
+    #[test]
+    fn parses_group_add() {
+        let args = vec![
+            "group".to_string(),
+            "add".to_string(),
+            "ca-west-prod01".to_string(),
+            "agent-a".to_string(),
+        ];
+        let parsed = parse_cli_args(args).expect("group add should parse");
+        let CliParseOutcome::Run(Command::GroupAdd { group_id, agent_id }) = parsed else {
+            panic!("unexpected command parse result");
+        };
+        assert_eq!(group_id, "ca-west-prod01");
+        assert_eq!(agent_id, "agent-a");
+    }
+
+    #[test]
+    fn parses_group_remove() {
+        let args = vec![
+            "group".to_string(),
+            "remove".to_string(),
+            "ca-west-prod01".to_string(),
+            "agent-a".to_string(),
+        ];
+        let parsed = parse_cli_args(args).expect("group remove should parse");
+        let CliParseOutcome::Run(Command::GroupRemove { group_id, agent_id }) = parsed else {
+            panic!("unexpected command parse result");
+        };
+        assert_eq!(group_id, "ca-west-prod01");
+        assert_eq!(agent_id, "agent-a");
+    }
+
+    #[test]
+    fn parses_group_move() {
+        let args = vec![
+            "group".to_string(),
+            "move".to_string(),
+            "ca-west-prod01".to_string(),
+            "ca-west-prod02".to_string(),
+            "agent-a".to_string(),
+        ];
+        let parsed = parse_cli_args(args).expect("group move should parse");
+        let CliParseOutcome::Run(Command::GroupMove {
+            old_group_id,
+            new_group_id,
+            agent_id,
+        }) = parsed
+        else {
+            panic!("unexpected command parse result");
+        };
+        assert_eq!(old_group_id, "ca-west-prod01");
+        assert_eq!(new_group_id, "ca-west-prod02");
+        assert_eq!(agent_id, "agent-a");
+    }
+
+    #[test]
+    fn parses_group_set_name() {
+        let args = vec![
+            "group".to_string(),
+            "set-name".to_string(),
+            "ca-west-prod01".to_string(),
+            "CA West Name".to_string(),
+        ];
+        let parsed = parse_cli_args(args).expect("group set-name should parse");
+        let CliParseOutcome::Run(Command::GroupSetName {
+            group_id,
+            display_name,
+        }) = parsed
+        else {
+            panic!("unexpected command parse result");
+        };
+        assert_eq!(group_id, "ca-west-prod01");
+        assert_eq!(display_name, "CA West Name");
     }
 
     #[test]

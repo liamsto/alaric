@@ -7,9 +7,10 @@ mod server_store;
 pub mod sessions;
 
 pub use admin_store::{
-    AdminStoreError, AgentGroupDeleteOutcome, AgentGroupListEntry, AgentGroupUpsertOutcome,
-    KeyAddOutcome, KeyRevokeOutcome, KeyRotateOutcome, PrincipalAddOutcome,
-    PrincipalDisableOutcome, PrincipalListEntry,
+    AdminStoreError, AgentGroupCreateOutcome, AgentGroupDeleteOutcome, AgentGroupListEntry,
+    AgentGroupMemberAddOutcome, AgentGroupMemberRemoveOutcome, AgentGroupMoveOutcome,
+    AgentGroupSetNameOutcome, AgentGroupUpsertOutcome, KeyAddOutcome, KeyRevokeOutcome,
+    KeyRotateOutcome, PrincipalAddOutcome, PrincipalDisableOutcome, PrincipalListEntry,
 };
 pub use auth_listener::{AuthConfigListener, AuthConfigListenerError, AuthConfigNotification};
 pub use server_store::{ActivePrincipalKey, PruneLogsResult, ServerStoreError};

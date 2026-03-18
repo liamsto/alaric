@@ -103,6 +103,46 @@ pub enum AgentGroupUpsertOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentGroupCreateOutcome {
+    Created,
+    AlreadyExists,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentGroupMemberAddOutcome {
+    Added,
+    AlreadyMember,
+    GroupNotFound,
+    AgentNotFound,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentGroupMemberRemoveOutcome {
+    Removed,
+    NotMember,
+    GroupNotFound,
+    AgentNotFound,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentGroupMoveOutcome {
+    Moved {
+        removed_from_old_group: bool,
+        added_to_new_group: bool,
+    },
+    SourceGroupNotFound,
+    DestinationGroupNotFound,
+    AgentNotFound,
+    SameGroup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentGroupSetNameOutcome {
+    Updated,
+    GroupNotFound,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentGroupDeleteOutcome {
     Deleted,
     NotFound,
@@ -155,6 +195,218 @@ struct AgentMemberIdRow {
 }
 
 impl Database {
+    pub async fn admin_create_agent_group(
+        &self,
+        group_id: &str,
+        display_name: Option<&str>,
+    ) -> Result<AgentGroupCreateOutcome, AdminStoreError> {
+        validate_group_id(group_id)?;
+
+        let result = sqlx::query(
+            r#"
+            INSERT INTO agent_groups (external_id, display_name, metadata)
+            VALUES ($1, $2, '{}'::jsonb)
+            ON CONFLICT (external_id) DO NOTHING
+            "#,
+        )
+        .bind(group_id)
+        .bind(display_name)
+        .execute(self.pool())
+        .await?;
+
+        if result.rows_affected() == 0 {
+            Ok(AgentGroupCreateOutcome::AlreadyExists)
+        } else {
+            Ok(AgentGroupCreateOutcome::Created)
+        }
+    }
+
+    pub async fn admin_add_agent_to_group(
+        &self,
+        group_id: &str,
+        agent_id: &str,
+    ) -> Result<AgentGroupMemberAddOutcome, AdminStoreError> {
+        validate_group_id(group_id)?;
+        AgentId::new(agent_id)
+            .map_err(|err| AdminStoreError::InvalidPrincipalId(err.to_string()))?;
+
+        let mut tx = self.pool().begin().await?;
+        let Some(group) = find_agent_group_state(&mut *tx, group_id).await? else {
+            tx.commit().await?;
+            return Ok(AgentGroupMemberAddOutcome::GroupNotFound);
+        };
+
+        let Some(agent) = find_principal_state(&mut *tx, PrincipalKind::Agent, agent_id).await?
+        else {
+            tx.commit().await?;
+            return Ok(AgentGroupMemberAddOutcome::AgentNotFound);
+        };
+        if agent.disabled_at.is_some() {
+            tx.commit().await?;
+            return Ok(AgentGroupMemberAddOutcome::AgentNotFound);
+        }
+
+        let insert_result = sqlx::query(
+            r#"
+            INSERT INTO agent_group_members (group_id, agent_principal_id)
+            VALUES ($1, $2)
+            ON CONFLICT (group_id, agent_principal_id) DO NOTHING
+            "#,
+        )
+        .bind(group.id)
+        .bind(agent.id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        if insert_result.rows_affected() == 0 {
+            Ok(AgentGroupMemberAddOutcome::AlreadyMember)
+        } else {
+            Ok(AgentGroupMemberAddOutcome::Added)
+        }
+    }
+
+    pub async fn admin_remove_agent_from_group(
+        &self,
+        group_id: &str,
+        agent_id: &str,
+    ) -> Result<AgentGroupMemberRemoveOutcome, AdminStoreError> {
+        validate_group_id(group_id)?;
+        AgentId::new(agent_id)
+            .map_err(|err| AdminStoreError::InvalidPrincipalId(err.to_string()))?;
+
+        let mut tx = self.pool().begin().await?;
+        let Some(group) = find_agent_group_state(&mut *tx, group_id).await? else {
+            tx.commit().await?;
+            return Ok(AgentGroupMemberRemoveOutcome::GroupNotFound);
+        };
+
+        let Some(agent) = find_principal_state(&mut *tx, PrincipalKind::Agent, agent_id).await?
+        else {
+            tx.commit().await?;
+            return Ok(AgentGroupMemberRemoveOutcome::AgentNotFound);
+        };
+        if agent.disabled_at.is_some() {
+            tx.commit().await?;
+            return Ok(AgentGroupMemberRemoveOutcome::AgentNotFound);
+        }
+
+        let delete_result = sqlx::query(
+            r#"
+            DELETE FROM agent_group_members
+            WHERE group_id = $1
+              AND agent_principal_id = $2
+            "#,
+        )
+        .bind(group.id)
+        .bind(agent.id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        if delete_result.rows_affected() == 0 {
+            Ok(AgentGroupMemberRemoveOutcome::NotMember)
+        } else {
+            Ok(AgentGroupMemberRemoveOutcome::Removed)
+        }
+    }
+
+    pub async fn admin_move_agent_between_groups(
+        &self,
+        old_group_id: &str,
+        new_group_id: &str,
+        agent_id: &str,
+    ) -> Result<AgentGroupMoveOutcome, AdminStoreError> {
+        validate_group_id(old_group_id)?;
+        validate_group_id(new_group_id)?;
+        AgentId::new(agent_id)
+            .map_err(|err| AdminStoreError::InvalidPrincipalId(err.to_string()))?;
+
+        if old_group_id == new_group_id {
+            return Ok(AgentGroupMoveOutcome::SameGroup);
+        }
+
+        let mut tx = self.pool().begin().await?;
+        let Some(old_group) = find_agent_group_state(&mut *tx, old_group_id).await? else {
+            tx.commit().await?;
+            return Ok(AgentGroupMoveOutcome::SourceGroupNotFound);
+        };
+        let Some(new_group) = find_agent_group_state(&mut *tx, new_group_id).await? else {
+            tx.commit().await?;
+            return Ok(AgentGroupMoveOutcome::DestinationGroupNotFound);
+        };
+
+        let Some(agent) = find_principal_state(&mut *tx, PrincipalKind::Agent, agent_id).await?
+        else {
+            tx.commit().await?;
+            return Ok(AgentGroupMoveOutcome::AgentNotFound);
+        };
+        if agent.disabled_at.is_some() {
+            tx.commit().await?;
+            return Ok(AgentGroupMoveOutcome::AgentNotFound);
+        }
+
+        let removed_from_old_group = sqlx::query(
+            r#"
+            DELETE FROM agent_group_members
+            WHERE group_id = $1
+              AND agent_principal_id = $2
+            "#,
+        )
+        .bind(old_group.id)
+        .bind(agent.id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            != 0;
+
+        let added_to_new_group = sqlx::query(
+            r#"
+            INSERT INTO agent_group_members (group_id, agent_principal_id)
+            VALUES ($1, $2)
+            ON CONFLICT (group_id, agent_principal_id) DO NOTHING
+            "#,
+        )
+        .bind(new_group.id)
+        .bind(agent.id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            != 0;
+
+        tx.commit().await?;
+        Ok(AgentGroupMoveOutcome::Moved {
+            removed_from_old_group,
+            added_to_new_group,
+        })
+    }
+
+    pub async fn admin_set_agent_group_name(
+        &self,
+        group_id: &str,
+        display_name: &str,
+    ) -> Result<AgentGroupSetNameOutcome, AdminStoreError> {
+        validate_group_id(group_id)?;
+
+        let result = sqlx::query(
+            r#"
+            UPDATE agent_groups
+            SET display_name = $2
+            WHERE external_id = $1
+            "#,
+        )
+        .bind(group_id)
+        .bind(display_name)
+        .execute(self.pool())
+        .await?;
+
+        if result.rows_affected() == 0 {
+            Ok(AgentGroupSetNameOutcome::GroupNotFound)
+        } else {
+            Ok(AgentGroupSetNameOutcome::Updated)
+        }
+    }
+
     pub async fn admin_add_principal(
         &self,
         kind: PrincipalKind,
