@@ -15,15 +15,13 @@ This project is a small exploration of a secure system for running a limited set
 - Admin-defined agent groups for target shorthands
 
 ## Policy bundle format
-The agent loads a signed policy bundle from `AGENT_POLICY_PATH` (default: `./agent-policy.json`)
-and trusted Ed25519 verification keys from `AGENT_POLICY_KEYS_PATH` (default: `./policy-keys.json`).
-For examples of the aforementioned files, see [policy-keys.example.json](policy-keys.example.json) and [agent-policy.example.json](agent-policy.example.json)
+The agent loads a signed policy bundle from `AGENT_POLICY_PATH` (default: `./agent-policy.json`) and trusted Ed25519 verification keys from `AGENT_POLICY_KEYS_PATH` (default: `./policy-keys.json`). For examples of these, see [policy-keys.example.json](policy-keys.example.json) and [agent-policy.example.json](agent-policy.example.json)
 
 Bundle schema:
 - `SignedPolicyBundle { bundle_version, expires_at_unix, policy, signature }`
 - `PolicySignature { key_id, algorithm, value }` where `algorithm` is `ed25519` and `value` is hex
 
-Embedded policy schema:
+Policy schema:
 - `Policy { version, default_timeout_secs, max_output_bytes, commands }`
 - `CommandSpec { id, program, fixed_args, arg_specs, timeout_secs?, max_output_bytes? }`
 - `ArgSpec { name, required, validation? }`
@@ -32,11 +30,13 @@ Embedded policy schema:
 Unsigned bundles, unknown `key_id`s, invalid signatures, unsupported bundle versions, and any expired bundles are rejected during load.
 
 ## Peer attestation policy
-Client and agent each load an optional peer-attestation policy JSON. If unset, both default to:
+Peer attestation requires clients and agents to prove their identity using policy bundles shared out of band. The client and agent each load an optional peer-attestation policy JSON file. If unset, both default to:
 
 - `default_mode = preferred`
 - no principal overrides
 - no pair overrides
+
+Peer attestation serves as an optional additional layer of security. If activated, even a compromise of the server will not lead to a breach of confidentiality in traffic between agent/client pairs.
 
 Schema:
 
@@ -51,11 +51,7 @@ Resolution precedence is:
 - principal overrides (client + agent), combined by strictest mode
 - global default
 
-In effect:
-
-- `required`: session must complete peer attestation
-- `preferred`: attempt attestation when bundle material is available; otherwise continue
-- `disabled`: skip peer attestation
+`required` means the session must complete peer attestation to be activated. `preferred` will attempt attestation when bundle material is available, but otherwise will continue. `disabled` skips peer attestation.
 
 The agent and client each enforce their local policy, so either side can require attestation.
 
@@ -163,13 +159,13 @@ cargo run -p alaric-client -- \
   --arg text=hello
 ```
 
-6. Basic admin tasks (examples):
+6. Admin tasks:
 
 ```bash
-# list all principals
+# lists all principals
 cargo run -q -p aadmin -- principal list
 
-# disable and then re-enable a client principal
+# disable/enable a client principal
 cargo run -q -p aadmin -- principal disable client client-local
 cargo run -q -p aadmin -- principal add client client-local --display-name "Default local client"
 
