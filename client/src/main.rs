@@ -3,15 +3,19 @@ use std::{
     env,
     error::Error,
     io::{self, Write},
+    path::Path,
 };
 
 use alaric_lib::{
     constants::DEFAULT_SERVER_PORT,
     protocol::{
         AgentGroupId, AgentId, AgentMessage, ClientId, ClientMessage, CommandId,
-        HandshakeProofRequest, HandshakeRequest, HandshakeResponse, ListAgentsResponse,
-        OutputStream, RequestId, SecureChannel, build_auth_proof_ed25519, read_json_frame,
-        recv_secure_json, send_secure_json, write_json_frame,
+        HandshakeProofRequest, HandshakeRequest, HandshakeResponse, IdentityBundle,
+        ListAgentsResponse, OutputStream, PeerAttestationInit, PeerAttestationMode,
+        PeerAttestationPolicy, PeerAttestationResult, RequestId, Role, SecureChannel, SessionId,
+        TrustedIdentityKeys, build_auth_proof_ed25519, build_peer_attestation_proof,
+        read_json_frame, recv_secure_json, send_secure_json, verify_peer_attestation_proof,
+        write_json_frame,
     },
     security::noise::types::Keypair,
 };
@@ -20,12 +24,24 @@ use tracing::info;
 
 mod signal;
 
+const CLIENT_IDENTITY_BUNDLE_PATH_ENV: &str = "CLIENT_IDENTITY_BUNDLE_PATH";
+const CLIENT_PEER_ATTESTATION_POLICY_PATH_ENV: &str = "CLIENT_PEER_ATTESTATION_POLICY_PATH";
+const CLIENT_TRUSTED_KEYS_PATH_ENV: &str = "CLIENT_TRUSTED_KEYS_PATH";
+const DEFAULT_CLIENT_IDENTITY_BUNDLE_PATH: &str = "./identity-bundle.json";
+const DEFAULT_CLIENT_TRUSTED_KEYS_PATH: &str = "./policy-keys.json";
+
 #[derive(Debug)]
 struct RunCliArgs {
     command_id: CommandId,
     args: BTreeMap<String, String>,
     targets: Vec<AgentId>,
     groups: Vec<AgentGroupId>,
+}
+
+#[derive(Debug)]
+struct AuthenticatedConnection {
+    stream: TcpStream,
+    session_id: SessionId,
 }
 
 #[derive(Debug)]
@@ -72,6 +88,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         CliCommand::Run(run_args) => {
+            let attestation_policy = load_client_peer_attestation_policy()?;
+            let identity_bundle = load_client_identity_bundle()?;
             let targets = tokio::select! {
                 result = resolve_targets(&run_args, &client_id, &auth_key_id, &auth_private_key) => result?,
                 _ = &mut shutdown => {
@@ -94,6 +112,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         &run_args,
                         &auth_key_id,
                         &auth_private_key,
+                        &attestation_policy,
+                        identity_bundle.as_ref(),
                         multi_target,
                     ) => result,
                     _ = &mut shutdown => {
@@ -174,8 +194,8 @@ async fn fetch_discovery(
     auth_private_key: &str,
 ) -> Result<ListAgentsResponse, Box<dyn Error>> {
     let request = HandshakeRequest::client_discovery(client_id.clone());
-    let mut stream = connect_authenticated(&request, auth_key_id, auth_private_key).await?;
-    let response = read_json_frame::<_, ListAgentsResponse>(&mut stream).await?;
+    let mut connection = connect_authenticated(&request, auth_key_id, auth_private_key).await?;
+    let response = read_json_frame::<_, ListAgentsResponse>(&mut connection.stream).await?;
     Ok(response)
 }
 
@@ -185,12 +205,27 @@ async fn run_command_for_target(
     run_args: &RunCliArgs,
     auth_key_id: &str,
     auth_private_key: &str,
+    attestation_policy: &PeerAttestationPolicy,
+    identity_bundle: Option<&IdentityBundle>,
     multi_target: bool,
 ) -> Result<(), Box<dyn Error>> {
     let request = HandshakeRequest::client(client_id.clone(), target_agent_id.clone());
-    let mut stream = connect_authenticated(&request, auth_key_id, auth_private_key).await?;
+    let mut connection = connect_authenticated(&request, auth_key_id, auth_private_key).await?;
     let mut secure =
-        SecureChannel::handshake_xx_initiator(&mut stream, Keypair::default_keypair()).await?;
+        SecureChannel::handshake_xx_initiator(&mut connection.stream, Keypair::default_keypair())
+            .await?;
+    perform_peer_attestation(
+        &mut secure,
+        &mut connection.stream,
+        &connection.session_id,
+        client_id,
+        target_agent_id,
+        auth_key_id,
+        auth_private_key,
+        attestation_policy,
+        identity_bundle,
+    )
+    .await?;
 
     let request_id = RequestId(1);
     let execute = ClientMessage::Execute {
@@ -198,10 +233,11 @@ async fn run_command_for_target(
         command_id: run_args.command_id.clone(),
         args: run_args.args.clone(),
     };
-    send_secure_json(&mut secure, &mut stream, &execute).await?;
+    send_secure_json(&mut secure, &mut connection.stream, &execute).await?;
 
     loop {
-        let message = recv_secure_json::<_, AgentMessage>(&mut secure, &mut stream).await?;
+        let message =
+            recv_secure_json::<_, AgentMessage>(&mut secure, &mut connection.stream).await?;
 
         match message {
             AgentMessage::Started {
@@ -314,7 +350,7 @@ async fn connect_authenticated(
     request: &HandshakeRequest,
     auth_key_id: &str,
     auth_private_key: &str,
-) -> Result<TcpStream, Box<dyn Error>> {
+) -> Result<AuthenticatedConnection, Box<dyn Error>> {
     let addr = format!("127.0.0.1:{}", DEFAULT_SERVER_PORT);
     let mut stream = TcpStream::connect(addr).await?;
     info!("connected to {}", stream.peer_addr()?);
@@ -346,7 +382,10 @@ async fn connect_authenticated(
                 request_context(request),
                 accepted.session_id
             );
-            Ok(stream)
+            Ok(AuthenticatedConnection {
+                stream,
+                session_id: accepted.session_id,
+            })
         }
         HandshakeResponse::Rejected(rejected) => Err(format!(
             "handshake rejected ({}): {:?}: {}",
@@ -359,6 +398,143 @@ async fn connect_authenticated(
             Err("unexpected second handshake challenge from server".into())
         }
     }
+}
+
+fn load_client_peer_attestation_policy() -> Result<PeerAttestationPolicy, Box<dyn Error>> {
+    let Some(path) = env::var(CLIENT_PEER_ATTESTATION_POLICY_PATH_ENV).ok() else {
+        info!(
+            "{} not set; using default peer attestation policy (default_mode=preferred)",
+            CLIENT_PEER_ATTESTATION_POLICY_PATH_ENV
+        );
+        return Ok(PeerAttestationPolicy::default());
+    };
+
+    let policy = PeerAttestationPolicy::load_from_path(&path)?;
+    info!("loaded peer attestation policy from {}", path);
+    Ok(policy)
+}
+
+fn load_client_identity_bundle() -> Result<Option<IdentityBundle>, Box<dyn Error>> {
+    let configured_identity_bundle_path = env::var(CLIENT_IDENTITY_BUNDLE_PATH_ENV).ok();
+    let identity_bundle_path = configured_identity_bundle_path
+        .clone()
+        .unwrap_or_else(|| DEFAULT_CLIENT_IDENTITY_BUNDLE_PATH.to_string());
+    if configured_identity_bundle_path.is_none() && !Path::new(&identity_bundle_path).exists() {
+        info!(
+            "identity bundle '{}' not found; peer attestation will fall back based on policy",
+            identity_bundle_path
+        );
+        return Ok(None);
+    }
+
+    let trusted_keys_path = env::var(CLIENT_TRUSTED_KEYS_PATH_ENV)
+        .unwrap_or_else(|_| DEFAULT_CLIENT_TRUSTED_KEYS_PATH.to_string());
+    let trusted_keys = TrustedIdentityKeys::load_from_path(&trusted_keys_path)?;
+
+    let identity_bundle = IdentityBundle::load_from_path(&identity_bundle_path, &trusted_keys)?;
+    info!(
+        "loaded client identity bundle from {} (expires_at_unix={})",
+        identity_bundle_path,
+        identity_bundle.expires_at_unix()
+    );
+    Ok(Some(identity_bundle))
+}
+
+async fn perform_peer_attestation(
+    secure: &mut SecureChannel,
+    stream: &mut TcpStream,
+    session_id: &SessionId,
+    client_id: &ClientId,
+    target_agent_id: &AgentId,
+    auth_key_id: &str,
+    auth_private_key: &str,
+    attestation_policy: &PeerAttestationPolicy,
+    identity_bundle: Option<&IdentityBundle>,
+) -> Result<(), Box<dyn Error>> {
+    let mode = attestation_policy.resolve(client_id, target_agent_id);
+    let handshake_hash = secure.handshake_hash();
+    let mut client_proof = None;
+    if mode != PeerAttestationMode::Disabled {
+        match identity_bundle
+            .and_then(|bundle| bundle.agent_identity_key(target_agent_id))
+            .is_some()
+        {
+            true => {
+                client_proof = Some(build_peer_attestation_proof(
+                    session_id,
+                    handshake_hash,
+                    client_id,
+                    target_agent_id,
+                    Role::Client,
+                    auth_key_id,
+                    auth_private_key,
+                )?);
+            }
+            false if mode.requires_attestation() => {
+                return Err(format!(
+                    "peer attestation is required for client '{}' and agent '{}', but the identity bundle is missing key material for target '{}'",
+                    client_id, target_agent_id, target_agent_id
+                )
+                .into());
+            }
+            false => {}
+        }
+    }
+
+    let init = PeerAttestationInit {
+        client_id: client_id.clone(),
+        proof: client_proof,
+    };
+    send_secure_json(secure, stream, &init).await?;
+
+    let result = recv_secure_json::<_, PeerAttestationResult>(secure, stream).await?;
+    if !result.accepted {
+        let message = result
+            .message
+            .unwrap_or_else(|| "peer attestation rejected by agent".to_string());
+        return Err(message.into());
+    }
+
+    let mut verified = false;
+    if let Some(agent_proof) = result.agent_proof {
+        let identity_bundle = identity_bundle.ok_or_else(|| {
+            "agent sent peer attestation proof, but no identity bundle is loaded".to_string()
+        })?;
+        let Some(agent_identity) = identity_bundle.agent_identity_key(target_agent_id) else {
+            return Err(format!(
+                "identity bundle does not contain key material for target agent '{}'",
+                target_agent_id
+            )
+            .into());
+        };
+        verified = verify_peer_attestation_proof(
+            &agent_proof,
+            session_id,
+            handshake_hash,
+            client_id,
+            target_agent_id,
+            Role::Agent,
+            &agent_identity.key_id,
+            agent_identity.public_key,
+        )?;
+        if !verified {
+            return Err(format!(
+                "peer attestation failed while verifying agent '{}'",
+                target_agent_id
+            )
+            .into());
+        }
+    }
+
+    if mode.requires_attestation() && !verified {
+        return Err(format!(
+            "peer attestation is required for client '{}' and agent '{}', but the session was not attested",
+            client_id, target_agent_id
+        )
+        .into());
+    }
+
+    Ok(())
 }
 
 enum CliParseOutcome {
@@ -480,6 +656,9 @@ Environment:
   TARGET_AGENT_ID         Optional single-target fallback when --target/--group are omitted (default: agent-default)
   CLIENT_AUTH_KEY_ID      Required handshake auth key id for this client id
   CLIENT_AUTH_PRIVATE_KEY Required Ed25519 private key hex for this client id
+  CLIENT_PEER_ATTESTATION_POLICY_PATH Optional peer attestation policy JSON path
+  CLIENT_TRUSTED_KEYS_PATH Optional trusted identity-signing keys path (default: ./policy-keys.json, used when loading identity bundle)
+  CLIENT_IDENTITY_BUNDLE_PATH Optional signed identity bundle path (default: ./identity-bundle.json if present)
   COMMAND_ID              Optional fallback for --command-id"
 }
 
