@@ -10,6 +10,8 @@ This project is a small exploration of a secure system for running a limited set
 - Argument validation (regex and enum rules)
 - Streaming `stdout`/`stderr` output events
 - Final completion event with exit code, timeout flag, and truncation flag
+- Multi-target command execution from a single client invocation
+- Admin-defined agent groups for target shorthands
 
 ## Policy bundle format
 The agent loads a signed policy bundle from `AGENT_POLICY_PATH` (default: `./agent-policy.json`)
@@ -97,6 +99,27 @@ CLIENT_ID=client-local \
 cargo run -p alaric-client -- list-agents
 ```
 
+Create and inspect an agent group:
+
+```bash
+cargo run -q -p alaric-admin -- group upsert ca-west-prod01 --display-name "Canada West Production 1" --member agent-default
+cargo run -q -p alaric-admin -- group list
+```
+
+Run a command against multiple targets (direct targets and group aliases can be mixed):
+
+```bash
+source ./.dev-auth.env
+
+CLIENT_ID=client-local \
+cargo run -p alaric-client -- \
+  run \
+  --command-id echo_text \
+  --target agent-default \
+  --group ca-west-prod01 \
+  --arg text=hello
+```
+
 6. Basic admin tasks (examples):
 
 ```bash
@@ -118,8 +141,8 @@ Client usage:
 
 ```text
 alaric-client list-agents
-alaric-client run --command-id <id> [--arg name=value]...
-alaric-client --command-id <id> [--arg name=value]...
+alaric-client run --command-id <id> [--target <agent_id>]... [--group <group_id>]... [--arg name=value]...
+alaric-client --command-id <id> [--target <agent_id>]... [--group <group_id>]... [--arg name=value]...
 ```
 
 Notes:
@@ -145,6 +168,9 @@ alaric-admin principal list [agent|client|all]
 alaric-admin key add <agent|client> <external_id> <key_id> <public_key_hex>
 alaric-admin key rotate <agent|client> <external_id> <new_key_id> <new_public_key_hex>
 alaric-admin key revoke <agent|client> <external_id> <key_id>
+alaric-admin group upsert <group_id> [--display-name <name>] [--member <agent_id>]...
+alaric-admin group delete <group_id>
+alaric-admin group list
 ```
 
 ## SQLx Compile-Time Checking
