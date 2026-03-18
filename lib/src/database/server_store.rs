@@ -18,8 +18,8 @@ use crate::{
         sessions::HandshakeRejectionCode,
     },
     protocol::{
-        AgentDiscoveryEntry, AgentId, AgentPresenceStatus, ClientId, HandshakeErrorCode,
-        HandshakeRequest, SessionId,
+        AgentDiscoveryEntry, AgentGroupDiscoveryEntry, AgentGroupId, AgentId, AgentPresenceStatus,
+        ClientId, HandshakeErrorCode, HandshakeRequest, SessionId,
     },
 };
 
@@ -110,6 +110,13 @@ struct AgentDiscoveryRow {
     last_seen_at: Option<DateTime<Utc>>,
     lease_expires_at: Option<DateTime<Utc>>,
     metadata: Json<Value>,
+}
+
+#[derive(Debug, FromRow)]
+struct AgentGroupDiscoveryRow {
+    group_external_id: String,
+    display_name: Option<String>,
+    member_agent_ids: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -547,6 +554,55 @@ impl Database {
         }
 
         Ok(agents)
+    }
+
+    pub async fn list_discoverable_agent_groups(
+        &self,
+    ) -> Result<Vec<AgentGroupDiscoveryEntry>, ServerStoreError> {
+        let rows = sqlx::query_as::<_, AgentGroupDiscoveryRow>(
+            r#"
+            SELECT
+                g.external_id AS group_external_id,
+                g.display_name,
+                COALESCE(
+                    ARRAY_AGG(p.external_id ORDER BY p.external_id)
+                        FILTER (WHERE p.external_id IS NOT NULL),
+                    ARRAY[]::text[]
+                ) AS member_agent_ids
+            FROM agent_groups AS g
+            LEFT JOIN agent_group_members AS gm
+                ON gm.group_id = g.id
+            LEFT JOIN principals AS p
+                ON p.id = gm.agent_principal_id
+               AND p.kind = 'agent'
+               AND p.disabled_at IS NULL
+            GROUP BY g.id, g.external_id, g.display_name
+            ORDER BY g.external_id
+            "#,
+        )
+        .fetch_all(self.pool())
+        .await?;
+
+        let mut groups = Vec::with_capacity(rows.len());
+        for row in rows {
+            let Ok(group_id) = AgentGroupId::new(&row.group_external_id) else {
+                continue;
+            };
+
+            let members = row
+                .member_agent_ids
+                .into_iter()
+                .filter_map(|member| AgentId::new(member).ok())
+                .collect::<Vec<_>>();
+
+            groups.push(AgentGroupDiscoveryEntry {
+                group_id,
+                display_name: row.display_name,
+                members,
+            });
+        }
+
+        Ok(groups)
     }
 
     pub async fn record_agent_disconnected(

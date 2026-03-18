@@ -1,4 +1,8 @@
-use std::{error::Error, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fmt,
+};
 
 use sqlx::{
     Executor, FromRow,
@@ -13,13 +17,15 @@ use crate::{
         Database,
         principals::{KeyAlgorithm, PrincipalKind},
     },
-    protocol::{AgentId, ClientId, decode_ed25519_public_key},
+    protocol::{AgentGroupId, AgentId, ClientId, decode_ed25519_public_key},
 };
 
 #[derive(Debug)]
 pub enum AdminStoreError {
     Sqlx(sqlx::Error),
     InvalidPrincipalId(String),
+    InvalidGroupId(String),
+    UnknownAgentGroupMembers(Vec<String>),
     InvalidKeyId,
     InvalidPublicKey(String),
 }
@@ -31,6 +37,14 @@ impl fmt::Display for AdminStoreError {
             AdminStoreError::InvalidPrincipalId(message) => {
                 write!(f, "invalid principal id: {}", message)
             }
+            AdminStoreError::InvalidGroupId(message) => {
+                write!(f, "invalid agent group id: {}", message)
+            }
+            AdminStoreError::UnknownAgentGroupMembers(members) => write!(
+                f,
+                "unknown or disabled agent group members: {}",
+                members.join(", ")
+            ),
             AdminStoreError::InvalidKeyId => f.write_str("key_id must not be empty"),
             AdminStoreError::InvalidPublicKey(message) => {
                 write!(f, "invalid Ed25519 public key: {}", message)
@@ -82,6 +96,18 @@ pub struct KeyRotateOutcome {
     pub revoked_other_keys: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentGroupUpsertOutcome {
+    Created,
+    Updated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentGroupDeleteOutcome {
+    Deleted,
+    NotFound,
+}
+
 #[derive(Debug, Clone, FromRow)]
 pub struct PrincipalListEntry {
     pub kind: PrincipalKind,
@@ -91,6 +117,14 @@ pub struct PrincipalListEntry {
     pub disabled_at: Option<DateTime<Utc>>,
     pub key_count: i64,
     pub active_key_count: i64,
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub struct AgentGroupListEntry {
+    pub external_id: String,
+    pub display_name: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub member_agent_ids: Vec<String>,
 }
 
 #[derive(Debug, FromRow)]
@@ -107,6 +141,17 @@ struct PrincipalIdRow {
 #[derive(Debug, FromRow)]
 struct KeyRevocationRow {
     revoked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, FromRow)]
+struct AgentGroupStateRow {
+    id: Uuid,
+}
+
+#[derive(Debug, FromRow)]
+struct AgentMemberIdRow {
+    id: Uuid,
+    external_id: String,
 }
 
 impl Database {
@@ -477,6 +522,167 @@ impl Database {
         tx.commit().await?;
         Ok(outcome)
     }
+
+    pub async fn admin_upsert_agent_group(
+        &self,
+        group_id: &str,
+        display_name: Option<&str>,
+        member_agent_ids: &[String],
+    ) -> Result<AgentGroupUpsertOutcome, AdminStoreError> {
+        validate_group_id(group_id)?;
+
+        let mut deduped_members = BTreeSet::new();
+        for member in member_agent_ids {
+            AgentId::new(member)
+                .map_err(|err| AdminStoreError::InvalidPrincipalId(err.to_string()))?;
+            deduped_members.insert(member.to_string());
+        }
+        let member_agent_ids = deduped_members.into_iter().collect::<Vec<_>>();
+
+        let mut tx = self.pool().begin().await?;
+        let existing = find_agent_group_state(&mut *tx, group_id).await?;
+
+        let (group_uuid, outcome) = if let Some(existing) = existing {
+            if let Some(display_name) = display_name {
+                sqlx::query(
+                    r#"
+                    UPDATE agent_groups
+                    SET display_name = $2
+                    WHERE id = $1
+                    "#,
+                )
+                .bind(existing.id)
+                .bind(display_name)
+                .execute(&mut *tx)
+                .await?;
+            }
+            (existing.id, AgentGroupUpsertOutcome::Updated)
+        } else {
+            let row = sqlx::query_as::<_, AgentGroupStateRow>(
+                r#"
+                INSERT INTO agent_groups (external_id, display_name, metadata)
+                VALUES ($1, $2, '{}'::jsonb)
+                RETURNING id
+                "#,
+            )
+            .bind(group_id)
+            .bind(display_name)
+            .fetch_one(&mut *tx)
+            .await?;
+            (row.id, AgentGroupUpsertOutcome::Created)
+        };
+
+        let resolved_member_rows = if member_agent_ids.is_empty() {
+            Vec::new()
+        } else {
+            sqlx::query_as::<_, AgentMemberIdRow>(
+                r#"
+                SELECT id, external_id
+                FROM principals
+                WHERE kind = 'agent'
+                  AND disabled_at IS NULL
+                  AND external_id = ANY($1::text[])
+                ORDER BY external_id
+                "#,
+            )
+            .bind(&member_agent_ids)
+            .fetch_all(&mut *tx)
+            .await?
+        };
+
+        if resolved_member_rows.len() != member_agent_ids.len() {
+            let resolved = resolved_member_rows
+                .iter()
+                .map(|row| (row.external_id.clone(), row.id))
+                .collect::<BTreeMap<_, _>>();
+            let unknown_members = member_agent_ids
+                .into_iter()
+                .filter(|member| !resolved.contains_key(member))
+                .collect::<Vec<_>>();
+            return Err(AdminStoreError::UnknownAgentGroupMembers(unknown_members));
+        }
+
+        sqlx::query(
+            r#"
+            DELETE FROM agent_group_members
+            WHERE group_id = $1
+            "#,
+        )
+        .bind(group_uuid)
+        .execute(&mut *tx)
+        .await?;
+
+        for member in resolved_member_rows {
+            sqlx::query(
+                r#"
+                INSERT INTO agent_group_members (group_id, agent_principal_id)
+                VALUES ($1, $2)
+                ON CONFLICT (group_id, agent_principal_id) DO NOTHING
+                "#,
+            )
+            .bind(group_uuid)
+            .bind(member.id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(outcome)
+    }
+
+    pub async fn admin_delete_agent_group(
+        &self,
+        group_id: &str,
+    ) -> Result<AgentGroupDeleteOutcome, AdminStoreError> {
+        validate_group_id(group_id)?;
+
+        let result = sqlx::query(
+            r#"
+            DELETE FROM agent_groups
+            WHERE external_id = $1
+            "#,
+        )
+        .bind(group_id)
+        .execute(self.pool())
+        .await?;
+
+        if result.rows_affected() == 0 {
+            Ok(AgentGroupDeleteOutcome::NotFound)
+        } else {
+            Ok(AgentGroupDeleteOutcome::Deleted)
+        }
+    }
+
+    pub async fn admin_list_agent_groups(
+        &self,
+    ) -> Result<Vec<AgentGroupListEntry>, AdminStoreError> {
+        let groups = sqlx::query_as::<_, AgentGroupListEntry>(
+            r#"
+            SELECT
+                g.external_id,
+                g.display_name,
+                g.created_at,
+                COALESCE(
+                    ARRAY_AGG(p.external_id ORDER BY p.external_id)
+                        FILTER (WHERE p.external_id IS NOT NULL),
+                    ARRAY[]::text[]
+                ) AS member_agent_ids
+            FROM agent_groups AS g
+            LEFT JOIN agent_group_members AS gm
+                ON gm.group_id = g.id
+            LEFT JOIN principals AS p
+                ON p.id = gm.agent_principal_id
+               AND p.kind = 'agent'
+               AND p.disabled_at IS NULL
+            GROUP BY g.id, g.external_id, g.display_name, g.created_at
+            ORDER BY g.external_id
+            "#,
+        )
+        .fetch_all(self.pool())
+        .await?;
+
+        Ok(groups)
+    }
 }
 
 fn validate_principal_id(kind: PrincipalKind, external_id: &str) -> Result<(), AdminStoreError> {
@@ -485,6 +691,12 @@ fn validate_principal_id(kind: PrincipalKind, external_id: &str) -> Result<(), A
         PrincipalKind::Client => ClientId::new(external_id).map(|_| ()),
     }
     .map_err(|err| AdminStoreError::InvalidPrincipalId(err.to_string()))
+}
+
+fn validate_group_id(external_id: &str) -> Result<(), AdminStoreError> {
+    AgentGroupId::new(external_id)
+        .map(|_| ())
+        .map_err(|err| AdminStoreError::InvalidGroupId(err.to_string()))
 }
 
 async fn find_principal_state<'a, E>(
@@ -533,4 +745,24 @@ where
     .await?;
 
     Ok(row.map(|row| row.id))
+}
+
+async fn find_agent_group_state<'a, E>(
+    executor: E,
+    external_id: &str,
+) -> Result<Option<AgentGroupStateRow>, sqlx::Error>
+where
+    E: Executor<'a, Database = sqlx::Postgres>,
+{
+    sqlx::query_as::<_, AgentGroupStateRow>(
+        r#"
+        SELECT id
+        FROM agent_groups
+        WHERE external_id = $1
+        LIMIT 1
+        "#,
+    )
+    .bind(external_id)
+    .fetch_optional(executor)
+    .await
 }

@@ -9,7 +9,9 @@ pub use commands::{
     AgentMessage, ClientMessage, CommandId, CommandIdError, CommandProtocolError, OutputStream,
     RejectionCode, RequestId, recv_secure_json, send_secure_json,
 };
-pub use discovery::{AgentDiscoveryEntry, AgentPresenceStatus, ListAgentsResponse};
+pub use discovery::{
+    AgentDiscoveryEntry, AgentGroupDiscoveryEntry, AgentPresenceStatus, ListAgentsResponse,
+};
 pub use framing::{
     MAX_FRAME_BYTES, ProtocolError, read_bytes_frame, read_json_frame, write_bytes_frame,
     write_json_frame,
@@ -20,7 +22,7 @@ pub use handshake::{
     HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION, Role, build_auth_proof_ed25519,
     decode_ed25519_public_key, verify_auth_proof_ed25519,
 };
-pub use ids::{AgentId, ClientId, IdError, SessionId};
+pub use ids::{AgentGroupId, AgentId, ClientId, IdError, SessionId};
 pub use secure::{
     NOISE_HANDSHAKE_MSG_A_LEN, NOISE_HANDSHAKE_MSG_B_LEN, NOISE_HANDSHAKE_MSG_C_LEN,
     NOISE_PROLOGUE, SecureChannel, SecureChannelError,
@@ -28,7 +30,7 @@ pub use secure::{
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentId, ClientId, HandshakeRequest};
+    use super::{AgentGroupId, AgentId, ClientId, HandshakeRequest};
 
     #[test]
     fn agent_id_validation_rejects_invalid_chars() {
@@ -38,6 +40,11 @@ mod tests {
     #[test]
     fn client_id_validation_accepts_valid_chars() {
         assert!(ClientId::new("client_001.prod").is_ok());
+    }
+
+    #[test]
+    fn agent_group_id_validation_accepts_valid_chars() {
+        assert!(AgentGroupId::new("ca-west-prod01").is_ok());
     }
 
     #[test]
