@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     error::Error,
     net::SocketAddr,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use alaric_agent::{
@@ -12,9 +12,12 @@ use alaric_agent::{
 use alaric_lib::{
     protocol::{
         AgentId, AgentMessage, ClientId, ClientMessage, CommandId, HandshakeProofRequest,
-        HandshakeRequest, HandshakeResponse, OutputStream, RejectionCode, RequestId, SecureChannel,
-        build_auth_proof_ed25519, decode_ed25519_public_key, read_json_frame, recv_secure_json,
-        send_secure_json, write_json_frame,
+        HandshakeRequest, HandshakeResponse, IdentityBundle, IdentityPrincipal, OutputStream,
+        PeerAttestationInit, PeerAttestationPolicy, PeerAttestationResult, RejectionCode,
+        RequestId, Role, SecureChannel, SessionId, TrustedIdentityKeys, build_auth_proof_ed25519,
+        build_peer_attestation_proof, decode_ed25519_public_key, read_json_frame, recv_secure_json,
+        send_secure_json, sign_identity_bundle_ed25519, verify_peer_attestation_proof,
+        write_json_frame,
     },
     security::noise::types::Keypair,
 };
@@ -35,6 +38,7 @@ const CLIENT_PRIVATE_KEY_HEX: &str =
     "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb";
 const CLIENT_PUBLIC_KEY_HEX: &str =
     "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c";
+const IDENTITY_SIGNING_KEY_ID: &str = "control-plane-v1";
 
 fn test_authenticator(
     agent_ids: &[&str],
@@ -82,7 +86,7 @@ async fn spawn_server(
 async fn connect_agent(
     addr: std::net::SocketAddr,
     agent_id: &str,
-) -> Result<TcpStream, Box<dyn Error>> {
+) -> Result<(TcpStream, SessionId), Box<dyn Error>> {
     let mut agent = TcpStream::connect(addr).await?;
     let request = HandshakeRequest::agent(AgentId::new(agent_id)?);
     write_json_frame(&mut agent, &request).await?;
@@ -102,18 +106,22 @@ async fn connect_agent(
         read_json_frame::<_, HandshakeResponse>(&mut agent),
     )
     .await??;
-    assert!(matches!(final_response, HandshakeResponse::Accepted(_)));
-    Ok(agent)
+    let HandshakeResponse::Accepted(accepted) = final_response else {
+        panic!("expected accepted response");
+    };
+    Ok((agent, accepted.session_id))
 }
 
 async fn connect_client_secure(
     addr: SocketAddr,
     client_id: &str,
     target_agent_id: &str,
+    identity_bundle: &IdentityBundle,
 ) -> Result<(TcpStream, SecureChannel), Box<dyn Error>> {
     let mut client = TcpStream::connect(addr).await?;
-    let request =
-        HandshakeRequest::client(ClientId::new(client_id)?, AgentId::new(target_agent_id)?);
+    let client_id = ClientId::new(client_id)?;
+    let target_agent_id = AgentId::new(target_agent_id)?;
+    let request = HandshakeRequest::client(client_id.clone(), target_agent_id.clone());
     write_json_frame(&mut client, &request).await?;
 
     let response = timeout(
@@ -133,14 +141,96 @@ async fn connect_client_secure(
         read_json_frame::<_, HandshakeResponse>(&mut client),
     )
     .await??;
-    assert!(matches!(final_response, HandshakeResponse::Accepted(_)));
+    let HandshakeResponse::Accepted(accepted) = final_response else {
+        panic!("expected accepted response");
+    };
 
-    let secure = timeout(
+    let mut secure = timeout(
         Duration::from_secs(2),
         SecureChannel::handshake_xx_initiator(&mut client, Keypair::default_keypair()),
     )
     .await??;
+
+    let handshake_hash = secure.handshake_hash();
+    let client_proof = build_peer_attestation_proof(
+        &accepted.session_id,
+        handshake_hash,
+        &client_id,
+        &target_agent_id,
+        Role::Client,
+        CLIENT_KEY_ID,
+        CLIENT_PRIVATE_KEY_HEX,
+    )?;
+    send_secure_json(
+        &mut secure,
+        &mut client,
+        &PeerAttestationInit {
+            client_id: client_id.clone(),
+            proof: Some(client_proof),
+        },
+    )
+    .await?;
+
+    let result = recv_secure_json::<_, PeerAttestationResult>(&mut secure, &mut client).await?;
+    assert!(result.accepted, "agent should accept peer attestation");
+    let Some(agent_proof) = result.agent_proof else {
+        panic!("agent should return an attestation proof");
+    };
+    let Some(agent_identity) = identity_bundle.agent_identity_key(&target_agent_id) else {
+        return Err(format!(
+            "missing identity bundle key for agent '{}'",
+            target_agent_id
+        )
+        .into());
+    };
+    let verified = verify_peer_attestation_proof(
+        &agent_proof,
+        &accepted.session_id,
+        handshake_hash,
+        &client_id,
+        &target_agent_id,
+        Role::Agent,
+        &agent_identity.key_id,
+        agent_identity.public_key,
+    )?;
+    assert!(verified, "agent peer attestation should verify");
+
     Ok((client, secure))
+}
+
+fn test_identity_bundle(agent_id: &str, client_id: &str) -> Result<IdentityBundle, Box<dyn Error>> {
+    let now_unix = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let signed_bundle = sign_identity_bundle_ed25519(
+        now_unix + 300,
+        BTreeMap::from([(
+            agent_id.to_string(),
+            IdentityPrincipal {
+                key_id: AGENT_KEY_ID.to_string(),
+                public_key: AGENT_PUBLIC_KEY_HEX.to_string(),
+            },
+        )]),
+        BTreeMap::from([(
+            client_id.to_string(),
+            IdentityPrincipal {
+                key_id: CLIENT_KEY_ID.to_string(),
+                public_key: CLIENT_PUBLIC_KEY_HEX.to_string(),
+            },
+        )]),
+        IDENTITY_SIGNING_KEY_ID,
+        AGENT_PRIVATE_KEY_HEX,
+    )?;
+
+    let trusted_keys = TrustedIdentityKeys::from_json_map(
+        &serde_json::json!({
+            IDENTITY_SIGNING_KEY_ID: AGENT_PUBLIC_KEY_HEX
+        })
+        .to_string(),
+    )?;
+    let signed_bundle_json = serde_json::to_string(&signed_bundle)?;
+    Ok(IdentityBundle::from_signed_json(
+        &signed_bundle_json,
+        &trusted_keys,
+    )?)
 }
 
 async fn receive_until_terminal(
@@ -213,21 +303,39 @@ fn base_policy() -> Policy {
     policy
 }
 
+fn default_attestation_policy() -> PeerAttestationPolicy {
+    PeerAttestationPolicy::default()
+}
+
 #[tokio::test]
 async fn allows_command_and_streams_output() -> Result<(), Box<dyn Error>> {
+    let identity_bundle = test_identity_bundle("agent-cmd-ok", "client-cmd-ok")?;
     let (addr, server_task) =
         spawn_server(test_authenticator(&["agent-cmd-ok"], &["client-cmd-ok"])?).await?;
-    let mut agent_stream = connect_agent(addr, "agent-cmd-ok").await?;
+    let (mut agent_stream, agent_session_id) = connect_agent(addr, "agent-cmd-ok").await?;
+    let agent_id = AgentId::new("agent-cmd-ok")?;
     let policy = base_policy();
+    let attestation_policy = default_attestation_policy();
+    let agent_identity_bundle = identity_bundle.clone();
 
     let agent_task = tokio::spawn(async move {
-        run_secure_session(&mut agent_stream, &policy, Keypair::default_keypair())
-            .await
-            .expect("agent secure session should succeed");
+        run_secure_session(
+            &mut agent_stream,
+            &policy,
+            Keypair::default_keypair(),
+            agent_session_id,
+            &agent_id,
+            AGENT_KEY_ID,
+            AGENT_PRIVATE_KEY_HEX,
+            &attestation_policy,
+            Some(&agent_identity_bundle),
+        )
+        .await
+        .expect("agent secure session should succeed");
     });
 
     let (mut client_stream, mut secure) =
-        connect_client_secure(addr, "client-cmd-ok", "agent-cmd-ok").await?;
+        connect_client_secure(addr, "client-cmd-ok", "agent-cmd-ok", &identity_bundle).await?;
     let mut args = BTreeMap::new();
     args.insert("text".to_string(), "hello".to_string());
     send_secure_json(
@@ -274,18 +382,32 @@ async fn allows_command_and_streams_output() -> Result<(), Box<dyn Error>> {
 
 #[tokio::test]
 async fn rejects_unknown_command() -> Result<(), Box<dyn Error>> {
+    let identity_bundle = test_identity_bundle("agent-unknown", "client-unknown")?;
     let (addr, server_task) =
         spawn_server(test_authenticator(&["agent-unknown"], &["client-unknown"])?).await?;
-    let mut agent_stream = connect_agent(addr, "agent-unknown").await?;
+    let (mut agent_stream, agent_session_id) = connect_agent(addr, "agent-unknown").await?;
+    let agent_id = AgentId::new("agent-unknown")?;
     let policy = base_policy();
+    let attestation_policy = default_attestation_policy();
+    let agent_identity_bundle = identity_bundle.clone();
     let agent_task = tokio::spawn(async move {
-        run_secure_session(&mut agent_stream, &policy, Keypair::default_keypair())
-            .await
-            .expect("agent secure session should succeed");
+        run_secure_session(
+            &mut agent_stream,
+            &policy,
+            Keypair::default_keypair(),
+            agent_session_id,
+            &agent_id,
+            AGENT_KEY_ID,
+            AGENT_PRIVATE_KEY_HEX,
+            &attestation_policy,
+            Some(&agent_identity_bundle),
+        )
+        .await
+        .expect("agent secure session should succeed");
     });
 
     let (mut client_stream, mut secure) =
-        connect_client_secure(addr, "client-unknown", "agent-unknown").await?;
+        connect_client_secure(addr, "client-unknown", "agent-unknown", &identity_bundle).await?;
     send_secure_json(
         &mut secure,
         &mut client_stream,
@@ -315,21 +437,40 @@ async fn rejects_unknown_command() -> Result<(), Box<dyn Error>> {
 
 #[tokio::test]
 async fn rejects_invalid_argument_value() -> Result<(), Box<dyn Error>> {
+    let identity_bundle = test_identity_bundle("agent-invalid-arg", "client-invalid-arg")?;
     let (addr, server_task) = spawn_server(test_authenticator(
         &["agent-invalid-arg"],
         &["client-invalid-arg"],
     )?)
     .await?;
-    let mut agent_stream = connect_agent(addr, "agent-invalid-arg").await?;
+    let (mut agent_stream, agent_session_id) = connect_agent(addr, "agent-invalid-arg").await?;
+    let agent_id = AgentId::new("agent-invalid-arg")?;
     let policy = base_policy();
+    let attestation_policy = default_attestation_policy();
+    let agent_identity_bundle = identity_bundle.clone();
     let agent_task = tokio::spawn(async move {
-        run_secure_session(&mut agent_stream, &policy, Keypair::default_keypair())
-            .await
-            .expect("agent secure session should succeed");
+        run_secure_session(
+            &mut agent_stream,
+            &policy,
+            Keypair::default_keypair(),
+            agent_session_id,
+            &agent_id,
+            AGENT_KEY_ID,
+            AGENT_PRIVATE_KEY_HEX,
+            &attestation_policy,
+            Some(&agent_identity_bundle),
+        )
+        .await
+        .expect("agent secure session should succeed");
     });
 
-    let (mut client_stream, mut secure) =
-        connect_client_secure(addr, "client-invalid-arg", "agent-invalid-arg").await?;
+    let (mut client_stream, mut secure) = connect_client_secure(
+        addr,
+        "client-invalid-arg",
+        "agent-invalid-arg",
+        &identity_bundle,
+    )
+    .await?;
     let mut args = BTreeMap::new();
     args.insert("text".to_string(), "HELLO123".to_string());
     send_secure_json(
@@ -361,18 +502,32 @@ async fn rejects_invalid_argument_value() -> Result<(), Box<dyn Error>> {
 
 #[tokio::test]
 async fn times_out_long_running_command() -> Result<(), Box<dyn Error>> {
+    let identity_bundle = test_identity_bundle("agent-timeout", "client-timeout")?;
     let (addr, server_task) =
         spawn_server(test_authenticator(&["agent-timeout"], &["client-timeout"])?).await?;
-    let mut agent_stream = connect_agent(addr, "agent-timeout").await?;
+    let (mut agent_stream, agent_session_id) = connect_agent(addr, "agent-timeout").await?;
+    let agent_id = AgentId::new("agent-timeout")?;
     let policy = base_policy();
+    let attestation_policy = default_attestation_policy();
+    let agent_identity_bundle = identity_bundle.clone();
     let agent_task = tokio::spawn(async move {
-        run_secure_session(&mut agent_stream, &policy, Keypair::default_keypair())
-            .await
-            .expect("agent secure session should succeed");
+        run_secure_session(
+            &mut agent_stream,
+            &policy,
+            Keypair::default_keypair(),
+            agent_session_id,
+            &agent_id,
+            AGENT_KEY_ID,
+            AGENT_PRIVATE_KEY_HEX,
+            &attestation_policy,
+            Some(&agent_identity_bundle),
+        )
+        .await
+        .expect("agent secure session should succeed");
     });
 
     let (mut client_stream, mut secure) =
-        connect_client_secure(addr, "client-timeout", "agent-timeout").await?;
+        connect_client_secure(addr, "client-timeout", "agent-timeout", &identity_bundle).await?;
     let mut args = BTreeMap::new();
     args.insert("seconds".to_string(), "3".to_string());
     send_secure_json(
@@ -410,21 +565,35 @@ async fn times_out_long_running_command() -> Result<(), Box<dyn Error>> {
 
 #[tokio::test]
 async fn truncates_output_at_limit() -> Result<(), Box<dyn Error>> {
+    let identity_bundle = test_identity_bundle("agent-truncate", "client-truncate")?;
     let (addr, server_task) = spawn_server(test_authenticator(
         &["agent-truncate"],
         &["client-truncate"],
     )?)
     .await?;
-    let mut agent_stream = connect_agent(addr, "agent-truncate").await?;
+    let (mut agent_stream, agent_session_id) = connect_agent(addr, "agent-truncate").await?;
+    let agent_id = AgentId::new("agent-truncate")?;
     let policy = base_policy();
+    let attestation_policy = default_attestation_policy();
+    let agent_identity_bundle = identity_bundle.clone();
     let agent_task = tokio::spawn(async move {
-        run_secure_session(&mut agent_stream, &policy, Keypair::default_keypair())
-            .await
-            .expect("agent secure session should succeed");
+        run_secure_session(
+            &mut agent_stream,
+            &policy,
+            Keypair::default_keypair(),
+            agent_session_id,
+            &agent_id,
+            AGENT_KEY_ID,
+            AGENT_PRIVATE_KEY_HEX,
+            &attestation_policy,
+            Some(&agent_identity_bundle),
+        )
+        .await
+        .expect("agent secure session should succeed");
     });
 
     let (mut client_stream, mut secure) =
-        connect_client_secure(addr, "client-truncate", "agent-truncate").await?;
+        connect_client_secure(addr, "client-truncate", "agent-truncate", &identity_bundle).await?;
     send_secure_json(
         &mut secure,
         &mut client_stream,
