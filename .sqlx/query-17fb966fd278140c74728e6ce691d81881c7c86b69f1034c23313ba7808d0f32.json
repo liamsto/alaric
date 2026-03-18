@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO agent_presence (\n                    principal_id,\n                    connected_session_id,\n                    connected_at,\n                    disconnected_at,\n                    last_seen_at,\n                    disconnect_reason,\n                    metadata\n                )\n                VALUES ($1, $2, NOW(), NULL, NOW(), NULL, '{}'::jsonb)\n                ON CONFLICT (principal_id) DO UPDATE\n                SET connected_session_id = EXCLUDED.connected_session_id,\n                    connected_at = NOW(),\n                    disconnected_at = NULL,\n                    last_seen_at = NOW(),\n                    disconnect_reason = NULL\n                RETURNING principal_id AS id\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "17fb966fd278140c74728e6ce691d81881c7c86b69f1034c23313ba7808d0f32"
+}
