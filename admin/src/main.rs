@@ -1,10 +1,13 @@
 use std::{env, error::Error, io, time::Duration};
 
-use alaric_lib::database::{
-    AgentGroupCreateOutcome, AgentGroupDeleteOutcome, AgentGroupMemberAddOutcome,
-    AgentGroupMemberRemoveOutcome, AgentGroupMoveOutcome, AgentGroupSetNameOutcome, Database,
-    DatabaseConfig, KeyAddOutcome, KeyRevokeOutcome, PrincipalAddOutcome, PrincipalDisableOutcome,
-    principals::PrincipalKind,
+use alaric_lib::{
+    database::{
+        AgentGroupCreateOutcome, AgentGroupDeleteOutcome, AgentGroupMemberAddOutcome,
+        AgentGroupMemberRemoveOutcome, AgentGroupMoveOutcome, AgentGroupSetNameOutcome, Database,
+        DatabaseConfig, KeyAddOutcome, KeyRevokeOutcome, PrincipalAddOutcome,
+        PrincipalAttestationSetOutcome, PrincipalDisableOutcome, principals::PrincipalKind,
+    },
+    protocol::PeerAttestationMode,
 };
 
 #[derive(Debug)]
@@ -19,10 +22,16 @@ enum Command {
         kind: PrincipalKind,
         external_id: String,
         display_name: Option<String>,
+        attestation_mode: Option<PeerAttestationMode>,
     },
     PrincipalDisable {
         kind: PrincipalKind,
         external_id: String,
+    },
+    PrincipalSetAttestation {
+        kind: PrincipalKind,
+        external_id: String,
+        attestation_mode: PeerAttestationMode,
     },
     PrincipalList {
         kind: Option<PrincipalKind>,
@@ -127,9 +136,15 @@ async fn run_command(
             kind,
             external_id,
             display_name,
+            attestation_mode,
         } => {
             let outcome = database
-                .admin_add_principal(kind, &external_id, display_name.as_deref())
+                .admin_add_principal(
+                    kind,
+                    &external_id,
+                    display_name.as_deref(),
+                    attestation_mode,
+                )
                 .await?;
             match outcome {
                 PrincipalAddOutcome::Added => {
@@ -149,6 +164,32 @@ async fn run_command(
                 PrincipalAddOutcome::AlreadyActive => {
                     println!(
                         "principal already active: kind={}, id={}",
+                        principal_kind_name(kind),
+                        external_id
+                    );
+                }
+            }
+        }
+        Command::PrincipalSetAttestation {
+            kind,
+            external_id,
+            attestation_mode,
+        } => {
+            let outcome = database
+                .admin_set_principal_attestation(kind, &external_id, attestation_mode)
+                .await?;
+            match outcome {
+                PrincipalAttestationSetOutcome::Updated => {
+                    println!(
+                        "principal attestation updated: kind={}, id={}, attestation={}",
+                        principal_kind_name(kind),
+                        external_id,
+                        attestation_mode_name(attestation_mode)
+                    );
+                }
+                PrincipalAttestationSetOutcome::NotFound => {
+                    println!(
+                        "principal not found: kind={}, id={}",
                         principal_kind_name(kind),
                         external_id
                     );
@@ -189,7 +230,7 @@ async fn run_command(
             }
 
             println!(
-                "kind\texternal_id\tstatus\tactive_keys\ttotal_keys\tdisplay_name\tcreated_at"
+                "kind\texternal_id\tstatus\tattestation\tactive_keys\ttotal_keys\tdisplay_name\tcreated_at"
             );
             for principal in principals {
                 let status = if principal.disabled_at.is_some() {
@@ -199,10 +240,11 @@ async fn run_command(
                 };
                 let display_name = principal.display_name.unwrap_or_default();
                 println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                     principal_kind_name(principal.kind),
                     principal.external_id,
                     status,
+                    attestation_mode_name(principal.attestation_mode),
                     principal.active_key_count,
                     principal.key_count,
                     display_name,
@@ -525,6 +567,7 @@ fn parse_principal_command(args: &[String]) -> Result<Command, String> {
             let external_id = args[2].clone();
 
             let mut display_name = None;
+            let mut attestation_mode = None;
             let mut index = 3usize;
             while index < args.len() {
                 match args[index].as_str() {
@@ -533,6 +576,13 @@ fn parse_principal_command(args: &[String]) -> Result<Command, String> {
                             return Err("--display-name requires a value".to_string());
                         };
                         display_name = Some(value.clone());
+                        index += 2;
+                    }
+                    "--attestation" => {
+                        let Some(value) = args.get(index + 1) else {
+                            return Err("--attestation requires a value".to_string());
+                        };
+                        attestation_mode = Some(parse_attestation_mode(value)?);
                         index += 2;
                     }
                     value => {
@@ -545,6 +595,21 @@ fn parse_principal_command(args: &[String]) -> Result<Command, String> {
                 kind,
                 external_id,
                 display_name,
+                attestation_mode,
+            })
+        }
+        "set-attestation" => {
+            if args.len() != 4 {
+                return Err(
+                    "principal set-attestation requires: principal set-attestation <agent|client> <external_id> <required|preferred|disabled>"
+                        .to_string(),
+                );
+            }
+
+            Ok(Command::PrincipalSetAttestation {
+                kind: parse_principal_kind(&args[1])?,
+                external_id: args[2].clone(),
+                attestation_mode: parse_attestation_mode(&args[3])?,
             })
         }
         "disable" => {
@@ -741,6 +806,18 @@ fn parse_principal_kind(raw: &str) -> Result<PrincipalKind, String> {
     }
 }
 
+fn parse_attestation_mode(raw: &str) -> Result<PeerAttestationMode, String> {
+    match raw {
+        "required" => Ok(PeerAttestationMode::Required),
+        "preferred" => Ok(PeerAttestationMode::Preferred),
+        "disabled" => Ok(PeerAttestationMode::Disabled),
+        _ => Err(format!(
+            "invalid attestation mode '{}'; expected 'required', 'preferred', or 'disabled'",
+            raw
+        )),
+    }
+}
+
 const fn principal_kind_name(kind: PrincipalKind) -> &'static str {
     match kind {
         PrincipalKind::Agent => "agent",
@@ -748,9 +825,18 @@ const fn principal_kind_name(kind: PrincipalKind) -> &'static str {
     }
 }
 
+const fn attestation_mode_name(mode: PeerAttestationMode) -> &'static str {
+    match mode {
+        PeerAttestationMode::Required => "required",
+        PeerAttestationMode::Preferred => "preferred",
+        PeerAttestationMode::Disabled => "disabled",
+    }
+}
+
 fn usage_text() -> &'static str {
     "Usage:
-  aadmin principal add <agent|client> <external_id> [--display-name <name>]
+  aadmin principal add <agent|client> <external_id> [--display-name <name>] [--attestation <required|preferred|disabled>]
+  aadmin principal set-attestation <agent|client> <external_id> <required|preferred|disabled>
   aadmin principal disable <agent|client> <external_id>
   aadmin principal list [agent|client|all]
   aadmin key add <agent|client> <external_id> <key_id> <public_key_hex>
@@ -773,6 +859,7 @@ Environment:
 #[cfg(test)]
 mod tests {
     use super::{CliParseOutcome, Command, PrincipalKind, parse_cli_args};
+    use alaric_lib::protocol::PeerAttestationMode;
 
     #[test]
     fn parses_principal_add_agent() {
@@ -790,6 +877,7 @@ mod tests {
             kind,
             external_id,
             display_name,
+            attestation_mode,
         }) = parsed
         else {
             panic!("unexpected command parse result");
@@ -797,6 +885,33 @@ mod tests {
         assert_eq!(kind, PrincipalKind::Agent);
         assert_eq!(external_id, "agent-a");
         assert_eq!(display_name.as_deref(), Some("Agent A"));
+        assert_eq!(attestation_mode, None);
+    }
+
+    #[test]
+    fn parses_principal_add_with_attestation_mode() {
+        let args = vec![
+            "principal".to_string(),
+            "add".to_string(),
+            "client".to_string(),
+            "client-a".to_string(),
+            "--attestation".to_string(),
+            "required".to_string(),
+        ];
+
+        let parsed = parse_cli_args(args).expect("principal add should parse");
+        let CliParseOutcome::Run(Command::PrincipalAdd {
+            kind,
+            external_id,
+            attestation_mode,
+            ..
+        }) = parsed
+        else {
+            panic!("unexpected command parse result");
+        };
+        assert_eq!(kind, PrincipalKind::Client);
+        assert_eq!(external_id, "client-a");
+        assert_eq!(attestation_mode, Some(PeerAttestationMode::Required));
     }
 
     #[test]
@@ -853,6 +968,30 @@ mod tests {
 
         let err = parse_cli_args(args).expect_err("invalid kind should fail");
         assert!(err.contains("invalid principal kind"));
+    }
+
+    #[test]
+    fn parses_principal_set_attestation() {
+        let args = vec![
+            "principal".to_string(),
+            "set-attestation".to_string(),
+            "agent".to_string(),
+            "agent-a".to_string(),
+            "disabled".to_string(),
+        ];
+
+        let parsed = parse_cli_args(args).expect("set-attestation should parse");
+        let CliParseOutcome::Run(Command::PrincipalSetAttestation {
+            kind,
+            external_id,
+            attestation_mode,
+        }) = parsed
+        else {
+            panic!("unexpected command parse result");
+        };
+        assert_eq!(kind, PrincipalKind::Agent);
+        assert_eq!(external_id, "agent-a");
+        assert_eq!(attestation_mode, PeerAttestationMode::Disabled);
     }
 
     #[test]
