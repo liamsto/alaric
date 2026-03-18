@@ -1,0 +1,18 @@
+{
+  "default_mode": "preferred",
+  "principal_modes": {
+    "clients": {
+      "client-local": "required"
+    },
+    "agents": {
+      "agent-default": "preferred"
+    }
+  },
+  "pair_modes": [
+    {
+      "client_id": "client-local",
+      "agent_id": "agent-default",
+      "mode": "required"
+    }
+  ]
+}

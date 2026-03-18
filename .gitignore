@@ -2,4 +2,5 @@
 /server-auth.json
 /agent-policy.json
 /policy-keys.json
+/identity-bundle.json
 /.dev-auth.env
