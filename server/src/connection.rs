@@ -455,8 +455,8 @@ async fn handle_client_discovery(
     client_id: ClientId,
 ) -> Result<(), BoxError> {
     let discovery_request = HandshakeRequest::client_discovery(client_id.clone());
-    let discovered_agents = if let Some(database) = &state.database {
-        match database.list_discoverable_agents().await {
+    let (discovered_agents, discovered_groups) = if let Some(database) = &state.database {
+        let agents = match database.list_discoverable_agents().await {
             Ok(agents) => agents,
             Err(err) => {
                 warn!("failed to load discoverable agents: {}", err);
@@ -480,9 +480,40 @@ async fn handle_client_discovery(
                 .await?;
                 return Ok(());
             }
-        }
+        };
+
+        let groups = match database.list_discoverable_agent_groups().await {
+            Ok(groups) => groups,
+            Err(err) => {
+                warn!("failed to load discoverable agent groups: {}", err);
+                if let Err(store_err) = database
+                    .record_session_rejection(
+                        SessionId::new_random(),
+                        Some(&discovery_request),
+                        HandshakeErrorCode::InternalError,
+                        &format!("failed to list agent groups: {}", err),
+                        peer,
+                    )
+                    .await
+                {
+                    warn!("failed to persist discovery-group rejection: {}", store_err);
+                }
+                send_reject(
+                    &mut stream,
+                    HandshakeErrorCode::InternalError,
+                    "failed to list agent groups",
+                )
+                .await?;
+                return Ok(());
+            }
+        };
+
+        (agents, groups)
     } else {
-        list_discoverable_agents_from_registry(&state).await
+        (
+            list_discoverable_agents_from_registry(&state).await,
+            Vec::new(),
+        )
     };
 
     let session_id = state.next_session_id();
@@ -496,7 +527,11 @@ async fn handle_client_discovery(
         warn!("failed to persist client discovery session: {}", store_err);
     }
 
-    let response = ListAgentsResponse::new(current_unix_timestamp()?, discovered_agents);
+    let response = ListAgentsResponse::new(
+        current_unix_timestamp()?,
+        discovered_agents,
+        discovered_groups,
+    );
     write_json_frame(&mut stream, &response).await?;
     info!(
         "client discovery completed: {} (client_id={}, session_id={}, agents={})",
