@@ -17,7 +17,7 @@ use crate::{
         Database,
         principals::{KeyAlgorithm, PrincipalKind},
     },
-    protocol::{AgentGroupId, AgentId, ClientId, decode_ed25519_public_key},
+    protocol::{AgentGroupId, AgentId, ClientId, PeerAttestationMode, decode_ed25519_public_key},
 };
 
 #[derive(Debug)]
@@ -72,6 +72,12 @@ pub enum PrincipalAddOutcome {
 pub enum PrincipalDisableOutcome {
     Disabled,
     AlreadyDisabled,
+    NotFound,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrincipalAttestationSetOutcome {
+    Updated,
     NotFound,
 }
 
@@ -153,6 +159,7 @@ pub struct PrincipalListEntry {
     pub kind: PrincipalKind,
     pub external_id: String,
     pub display_name: Option<String>,
+    pub attestation_mode: PeerAttestationMode,
     pub created_at: DateTime<Utc>,
     pub disabled_at: Option<DateTime<Utc>>,
     pub key_count: i64,
@@ -412,6 +419,7 @@ impl Database {
         kind: PrincipalKind,
         external_id: &str,
         display_name: Option<&str>,
+        attestation_mode: Option<PeerAttestationMode>,
     ) -> Result<PrincipalAddOutcome, AdminStoreError> {
         validate_principal_id(kind, external_id)?;
 
@@ -422,13 +430,14 @@ impl Database {
             None => {
                 sqlx::query(
                     r#"
-                    INSERT INTO principals (kind, external_id, display_name, metadata)
-                    VALUES ($1, $2, $3, '{}'::jsonb)
+                    INSERT INTO principals (kind, external_id, display_name, metadata, attestation_mode)
+                    VALUES ($1, $2, $3, '{}'::jsonb, COALESCE($4, 'preferred'::attestation_mode))
                     "#,
                 )
                 .bind(kind)
                 .bind(external_id)
                 .bind(display_name)
+                .bind(attestation_mode)
                 .execute(&mut *tx)
                 .await?;
                 tx.commit().await?;
@@ -439,28 +448,32 @@ impl Database {
                     r#"
                     UPDATE principals
                     SET disabled_at = NULL,
-                        display_name = COALESCE($2, display_name)
+                        display_name = COALESCE($2, display_name),
+                        attestation_mode = COALESCE($3, attestation_mode)
                     WHERE id = $1
                     "#,
                 )
                 .bind(existing.id)
                 .bind(display_name)
+                .bind(attestation_mode)
                 .execute(&mut *tx)
                 .await?;
                 tx.commit().await?;
                 Ok(PrincipalAddOutcome::Reenabled)
             }
             Some(existing) => {
-                if display_name.is_some() {
+                if display_name.is_some() || attestation_mode.is_some() {
                     sqlx::query(
                         r#"
                         UPDATE principals
-                        SET display_name = $2
+                        SET display_name = COALESCE($2, display_name),
+                            attestation_mode = COALESCE($3, attestation_mode)
                         WHERE id = $1
                         "#,
                     )
                     .bind(existing.id)
                     .bind(display_name)
+                    .bind(attestation_mode)
                     .execute(&mut *tx)
                     .await?;
                 }
@@ -501,6 +514,35 @@ impl Database {
         Ok(outcome)
     }
 
+    pub async fn admin_set_principal_attestation(
+        &self,
+        kind: PrincipalKind,
+        external_id: &str,
+        attestation_mode: PeerAttestationMode,
+    ) -> Result<PrincipalAttestationSetOutcome, AdminStoreError> {
+        validate_principal_id(kind, external_id)?;
+
+        let result = sqlx::query(
+            r#"
+            UPDATE principals
+            SET attestation_mode = $3
+            WHERE kind = $1
+              AND external_id = $2
+            "#,
+        )
+        .bind(kind)
+        .bind(external_id)
+        .bind(attestation_mode)
+        .execute(self.pool())
+        .await?;
+
+        if result.rows_affected() == 0 {
+            Ok(PrincipalAttestationSetOutcome::NotFound)
+        } else {
+            Ok(PrincipalAttestationSetOutcome::Updated)
+        }
+    }
+
     pub async fn admin_list_principals(
         &self,
         kind: Option<PrincipalKind>,
@@ -512,6 +554,7 @@ impl Database {
                     p.kind,
                     p.external_id,
                     p.display_name,
+                    p.attestation_mode,
                     p.created_at,
                     p.disabled_at,
                     COALESCE(k.key_count, 0) AS key_count,
@@ -542,6 +585,7 @@ impl Database {
                     p.kind,
                     p.external_id,
                     p.display_name,
+                    p.attestation_mode,
                     p.created_at,
                     p.disabled_at,
                     COALESCE(k.key_count, 0) AS key_count,

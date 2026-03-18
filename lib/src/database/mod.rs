@@ -10,7 +10,8 @@ pub use admin_store::{
     AdminStoreError, AgentGroupCreateOutcome, AgentGroupDeleteOutcome, AgentGroupListEntry,
     AgentGroupMemberAddOutcome, AgentGroupMemberRemoveOutcome, AgentGroupMoveOutcome,
     AgentGroupSetNameOutcome, AgentGroupUpsertOutcome, KeyAddOutcome, KeyRevokeOutcome,
-    KeyRotateOutcome, PrincipalAddOutcome, PrincipalDisableOutcome, PrincipalListEntry,
+    KeyRotateOutcome, PrincipalAddOutcome, PrincipalAttestationSetOutcome, PrincipalDisableOutcome,
+    PrincipalListEntry,
 };
 pub use auth_listener::{AuthConfigListener, AuthConfigListenerError, AuthConfigNotification};
 pub use server_store::{ActivePrincipalKey, PruneLogsResult, ServerStoreError};

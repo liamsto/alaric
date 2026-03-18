@@ -8,12 +8,15 @@ use sqlx::{
     },
 };
 
+use crate::protocol::PeerAttestationMode;
+
 // principals (
 //   id                       UUID PRIMARY KEY,
 //   kind                     principal_kind NOT NULL,
 //   external_id              TEXT NOT NULL,          -- AgentId/ClientId string
 //   display_name             TEXT,
 //   metadata                 JSONB NOT NULL DEFAULT '{}'::jsonb,
+//   attestation_mode         attestation_mode NOT NULL DEFAULT 'preferred',
 //   created_at               TIMESTAMPTZ NOT NULL,
 //   disabled_at              TIMESTAMPTZ,
 //   UNIQUE (kind, external_id)
@@ -32,6 +35,7 @@ pub struct Principal {
     pub external_id: String,
     pub display_name: Option<String>,
     pub metadata: Json<Value>,
+    pub attestation_mode: PeerAttestationMode,
     pub created_at: DateTime<Utc>,
     pub disabled_at: Option<DateTime<Utc>>,
 }

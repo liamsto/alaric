@@ -1,10 +1,17 @@
+mod attestation_policy;
 mod commands;
 mod discovery;
 mod framing;
 mod handshake;
+mod identity;
 mod ids;
+mod peer_attestation;
 mod secure;
 
+pub use attestation_policy::{
+    PairAttestationMode, PeerAttestationMode, PeerAttestationPolicy, PeerAttestationPolicyConfig,
+    PeerAttestationPolicyError, PrincipalAttestationModes,
+};
 pub use commands::{
     AgentMessage, ClientMessage, CommandId, CommandIdError, CommandProtocolError, OutputStream,
     RejectionCode, RequestId, recv_secure_json, send_secure_json,
@@ -22,7 +29,17 @@ pub use handshake::{
     HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION, Role, build_auth_proof_ed25519,
     decode_ed25519_public_key, verify_auth_proof_ed25519,
 };
+pub use identity::{
+    IDENTITY_BUNDLE_SIGNATURE_ALGORITHM_ED25519, IDENTITY_BUNDLE_VERSION_V1, IdentityBundle,
+    IdentityBundleError, IdentityBundleSignature, IdentityPrincipal, IdentityPublicKey,
+    SignedIdentityBundle, TrustedIdentityKeys, sign_identity_bundle_ed25519,
+};
 pub use ids::{AgentGroupId, AgentId, ClientId, IdError, SessionId};
+pub use peer_attestation::{
+    E2E_ATTESTATION_ALGORITHM_ED25519, E2E_ATTESTATION_CONTEXT_V1, PeerAttestationError,
+    PeerAttestationInit, PeerAttestationProof, PeerAttestationResult, build_peer_attestation_proof,
+    verify_peer_attestation_proof,
+};
 pub use secure::{
     NOISE_HANDSHAKE_MSG_A_LEN, NOISE_HANDSHAKE_MSG_B_LEN, NOISE_HANDSHAKE_MSG_C_LEN,
     NOISE_PROLOGUE, SecureChannel, SecureChannelError,

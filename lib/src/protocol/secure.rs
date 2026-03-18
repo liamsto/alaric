@@ -165,6 +165,12 @@ impl SecureChannel {
         Ok(in_out)
     }
 
+    pub fn handshake_hash(&self) -> [u8; 32] {
+        self.session
+            .get_handshake_hash()
+            .expect("handshake hash should always be available in transport mode")
+    }
+
     fn from_transport_session(session: NoiseSession) -> Result<Self, SecureChannelError> {
         if !session.is_transport() {
             return Err(SecureChannelError::HandshakeIncomplete);
