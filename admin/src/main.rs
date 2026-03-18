@@ -1,8 +1,8 @@
 use std::{env, error::Error, io, time::Duration};
 
 use alaric_lib::database::{
-    Database, DatabaseConfig, KeyAddOutcome, KeyRevokeOutcome, PrincipalAddOutcome,
-    PrincipalDisableOutcome, principals::PrincipalKind,
+    AgentGroupDeleteOutcome, AgentGroupUpsertOutcome, Database, DatabaseConfig, KeyAddOutcome,
+    KeyRevokeOutcome, PrincipalAddOutcome, PrincipalDisableOutcome, principals::PrincipalKind,
 };
 
 #[derive(Debug)]
@@ -42,6 +42,15 @@ enum Command {
         external_id: String,
         key_id: String,
     },
+    GroupUpsert {
+        external_id: String,
+        display_name: Option<String>,
+        members: Vec<String>,
+    },
+    GroupDelete {
+        external_id: String,
+    },
+    GroupList,
 }
 
 #[tokio::main]
@@ -292,6 +301,54 @@ async fn run_command(
                 }
             }
         }
+        Command::GroupUpsert {
+            external_id,
+            display_name,
+            members,
+        } => {
+            let outcome = database
+                .admin_upsert_agent_group(&external_id, display_name.as_deref(), &members)
+                .await?;
+            let action = match outcome {
+                AgentGroupUpsertOutcome::Created => "created",
+                AgentGroupUpsertOutcome::Updated => "updated",
+            };
+            println!(
+                "group {}: id={}, members={}",
+                action,
+                external_id,
+                members.join(",")
+            );
+        }
+        Command::GroupDelete { external_id } => {
+            let outcome = database.admin_delete_agent_group(&external_id).await?;
+            match outcome {
+                AgentGroupDeleteOutcome::Deleted => {
+                    println!("group deleted: id={}", external_id);
+                }
+                AgentGroupDeleteOutcome::NotFound => {
+                    println!("group not found: id={}", external_id);
+                }
+            }
+        }
+        Command::GroupList => {
+            let groups = database.admin_list_agent_groups().await?;
+            if groups.is_empty() {
+                println!("no groups found");
+                return Ok(());
+            }
+
+            println!("group_id\tmembers\tdisplay_name\tcreated_at");
+            for group in groups {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    group.external_id,
+                    group.member_agent_ids.join(","),
+                    group.display_name.unwrap_or_default(),
+                    group.created_at.to_rfc3339(),
+                );
+            }
+        }
     }
 
     Ok(())
@@ -309,6 +366,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<CliParseOutc
     let command = match args[0].as_str() {
         "principal" => parse_principal_command(&args[1..])?,
         "key" => parse_key_command(&args[1..])?,
+        "group" => parse_group_command(&args[1..])?,
         other => return Err(format!("unknown command '{}'", other)),
     };
     Ok(CliParseOutcome::Run(command))
@@ -439,6 +497,70 @@ fn parse_key_command(args: &[String]) -> Result<Command, String> {
     }
 }
 
+fn parse_group_command(args: &[String]) -> Result<Command, String> {
+    if args.is_empty() {
+        return Err("missing group subcommand".to_string());
+    }
+
+    match args[0].as_str() {
+        "upsert" => {
+            if args.len() < 2 {
+                return Err(
+                    "group upsert requires: group upsert <group_id> [--display-name <name>] [--member <agent_id>]..."
+                        .to_string(),
+                );
+            }
+
+            let external_id = args[1].clone();
+            let mut display_name = None;
+            let mut members = Vec::new();
+            let mut index = 2usize;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--display-name" => {
+                        let Some(value) = args.get(index + 1) else {
+                            return Err("--display-name requires a value".to_string());
+                        };
+                        display_name = Some(value.clone());
+                        index += 2;
+                    }
+                    "--member" => {
+                        let Some(value) = args.get(index + 1) else {
+                            return Err("--member requires an agent id value".to_string());
+                        };
+                        members.push(value.clone());
+                        index += 2;
+                    }
+                    other => {
+                        return Err(format!("unknown argument '{}'", other));
+                    }
+                }
+            }
+
+            Ok(Command::GroupUpsert {
+                external_id,
+                display_name,
+                members,
+            })
+        }
+        "delete" => {
+            if args.len() != 2 {
+                return Err("group delete requires: group delete <group_id>".to_string());
+            }
+            Ok(Command::GroupDelete {
+                external_id: args[1].clone(),
+            })
+        }
+        "list" => {
+            if args.len() != 1 {
+                return Err("group list does not take additional arguments".to_string());
+            }
+            Ok(Command::GroupList)
+        }
+        other => Err(format!("unknown group subcommand '{}'", other)),
+    }
+}
+
 fn parse_principal_kind(raw: &str) -> Result<PrincipalKind, String> {
     match raw {
         "agent" => Ok(PrincipalKind::Agent),
@@ -465,6 +587,9 @@ fn usage_text() -> &'static str {
   alaric-admin key add <agent|client> <external_id> <key_id> <public_key_hex>
   alaric-admin key rotate <agent|client> <external_id> <new_key_id> <new_public_key_hex>
   alaric-admin key revoke <agent|client> <external_id> <key_id>
+  alaric-admin group upsert <group_id> [--display-name <name>] [--member <agent_id>]...
+  alaric-admin group delete <group_id>
+  alaric-admin group list
 
 Environment:
   DATABASE_URL                   Required postgres URL
@@ -555,5 +680,40 @@ mod tests {
 
         let err = parse_cli_args(args).expect_err("invalid kind should fail");
         assert!(err.contains("invalid principal kind"));
+    }
+
+    #[test]
+    fn parses_group_upsert_with_members() {
+        let args = vec![
+            "group".to_string(),
+            "upsert".to_string(),
+            "ca-west-prod01".to_string(),
+            "--display-name".to_string(),
+            "CA West".to_string(),
+            "--member".to_string(),
+            "agent-a".to_string(),
+            "--member".to_string(),
+            "agent-b".to_string(),
+        ];
+
+        let parsed = parse_cli_args(args).expect("group upsert should parse");
+        let CliParseOutcome::Run(Command::GroupUpsert {
+            external_id,
+            display_name,
+            members,
+        }) = parsed
+        else {
+            panic!("unexpected command parse result");
+        };
+        assert_eq!(external_id, "ca-west-prod01");
+        assert_eq!(display_name.as_deref(), Some("CA West"));
+        assert_eq!(members, vec!["agent-a".to_string(), "agent-b".to_string()]);
+    }
+
+    #[test]
+    fn parses_group_list() {
+        let args = vec!["group".to_string(), "list".to_string()];
+        let parsed = parse_cli_args(args).expect("group list should parse");
+        assert!(matches!(parsed, CliParseOutcome::Run(Command::GroupList)));
     }
 }
