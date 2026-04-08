@@ -4,3 +4,5 @@
 /policy-keys.json
 /identity-bundle.json
 /.dev-auth.env
+/peer-attestation-policy.json
+.env
