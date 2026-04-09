@@ -118,21 +118,21 @@ pub(super) async fn run(
             match outcome {
                 PrincipalAddOutcome::Added => {
                     println!(
-                        "principal added: kind={}, id={}",
+                        "{} '{}' added",
                         principal_kind_name(kind),
                         command.external_id
                     );
                 }
                 PrincipalAddOutcome::Reenabled => {
                     println!(
-                        "principal re-enabled: kind={}, id={}",
+                        "{} '{}' re-enabled",
                         principal_kind_name(kind),
                         command.external_id
                     );
                 }
                 PrincipalAddOutcome::AlreadyActive => {
                     println!(
-                        "principal already active: kind={}, id={}",
+                        "{} '{}' already active",
                         principal_kind_name(kind),
                         command.external_id
                     );
@@ -149,7 +149,7 @@ pub(super) async fn run(
             match outcome {
                 AttestationSetOutcome::Updated => {
                     println!(
-                        "principal attestation updated: kind={}, id={}, attestation={}",
+                        "{} '{}' attestation updated to {}",
                         principal_kind_name(kind),
                         command.external_id,
                         attestation_mode_name(attestation_mode)
@@ -157,7 +157,7 @@ pub(super) async fn run(
                 }
                 AttestationSetOutcome::NotFound => {
                     println!(
-                        "principal not found: kind={}, id={}",
+                        "{} '{}' not found",
                         principal_kind_name(kind),
                         command.external_id
                     );
@@ -173,21 +173,21 @@ pub(super) async fn run(
             match outcome {
                 PrincipalDisableOutcome::Disabled => {
                     println!(
-                        "principal disabled: kind={}, id={}",
+                        "{} '{}' disabled",
                         principal_kind_name(kind),
                         command.external_id
                     );
                 }
                 PrincipalDisableOutcome::AlreadyDisabled => {
                     println!(
-                        "principal already disabled: kind={}, id={}",
+                        "{} '{}' already disabled",
                         principal_kind_name(kind),
                         command.external_id
                     );
                 }
                 PrincipalDisableOutcome::NotFound => {
                     println!(
-                        "principal not found: kind={}, id={}",
+                        "{} '{}' not found",
                         principal_kind_name(kind),
                         command.external_id
                     );

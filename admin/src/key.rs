@@ -76,23 +76,23 @@ pub(super) async fn run(
             match outcome {
                 KeyAddOutcome::Added => {
                     println!(
-                        "key added: kind={}, id={}, key_id={}",
+                        "key '{}' added for {} '{}'",
+                        command.key_id,
                         principal_kind_name(kind),
-                        command.external_id,
-                        command.key_id
+                        command.external_id
                     );
                 }
                 KeyAddOutcome::Updated => {
                     println!(
-                        "key updated: kind={}, id={}, key_id={}",
+                        "key '{}' updated for {} '{}'",
+                        command.key_id,
                         principal_kind_name(kind),
-                        command.external_id,
-                        command.key_id
+                        command.external_id
                     );
                 }
                 KeyAddOutcome::PrincipalNotFound => {
                     println!(
-                        "principal not found: kind={}, id={}",
+                        "{} '{}' not found",
                         principal_kind_name(kind),
                         command.external_id
                     );
@@ -112,24 +112,18 @@ pub(super) async fn run(
 
             let Some(outcome) = outcome else {
                 println!(
-                    "principal not found: kind={}, id={}",
+                    "{} '{}' not found",
                     principal_kind_name(kind),
                     command.external_id
                 );
                 return Ok(());
             };
 
-            let replacement = if outcome.replaced_existing_key {
-                "updated existing key id"
-            } else {
-                "inserted new key id"
-            };
             println!(
-                "key rotated: kind={}, id={}, key_id={} ({}), revoked_other_keys={}",
+                "key '{}' rotated for {} '{}', revoked {} other keys",
+                command.new_key_id,
                 principal_kind_name(kind),
                 command.external_id,
-                command.new_key_id,
-                replacement,
                 outcome.revoked_other_keys
             );
         }
@@ -142,31 +136,31 @@ pub(super) async fn run(
             match outcome {
                 KeyRevokeOutcome::Revoked => {
                     println!(
-                        "key revoked: kind={}, id={}, key_id={}",
+                        "key '{}' revoked for {} with id '{}'",
+                        command.key_id,
                         principal_kind_name(kind),
                         command.external_id,
-                        command.key_id
                     );
                 }
                 KeyRevokeOutcome::AlreadyRevoked => {
                     println!(
-                        "key already revoked: kind={}, id={}, key_id={}",
+                        "key '{}' already revoked for {} with id '{}'",
+                        command.key_id,
                         principal_kind_name(kind),
                         command.external_id,
-                        command.key_id
                     );
                 }
                 KeyRevokeOutcome::KeyNotFound => {
                     println!(
-                        "key not found: kind={}, id={}, key_id={}",
+                        "key '{}' not found for {} with id '{}'",
+                        command.key_id,
                         principal_kind_name(kind),
                         command.external_id,
-                        command.key_id
                     );
                 }
                 KeyRevokeOutcome::PrincipalNotFound => {
                     println!(
-                        "principal not found: kind={}, id={}",
+                        "{} '{}' not found",
                         principal_kind_name(kind),
                         command.external_id
                     );

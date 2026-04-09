@@ -85,10 +85,13 @@ pub(super) async fn run(
 
             match outcome {
                 GroupCreateOutcome::Created => {
-                    println!("group created: id={}", command.group_id);
+                    println!("group '{}' created", command.group_id);
                 }
                 GroupCreateOutcome::AlreadyExists => {
-                    println!("group already exists (no action): id={}", command.group_id);
+                    println!(
+                        "group '{}' already exists, no action performed",
+                        command.group_id
+                    );
                 }
             }
         }
@@ -103,10 +106,10 @@ pub(super) async fn run(
 
             match outcome {
                 GroupUpsertOutcome::Created => {
-                    println!("group upserted (created): id={}", command.group_id);
+                    println!("group '{}' created", command.group_id);
                 }
                 GroupUpsertOutcome::Updated => {
-                    println!("group upserted (updated): id={}", command.group_id);
+                    println!("group '{}' updated", command.group_id);
                 }
             }
         }
@@ -118,21 +121,21 @@ pub(super) async fn run(
             match outcome {
                 GroupAddOutcome::Added => {
                     println!(
-                        "agent added to group: group_id={}, agent_id={}",
+                        "agent '{}' added to '{}'",
                         command.group_id, command.agent_id
                     );
                 }
                 GroupAddOutcome::AlreadyMember => {
                     println!(
-                        "agent already in group (no action): group_id={}, agent_id={}",
+                        "agent '{}' already in '{}', no action performed",
                         command.group_id, command.agent_id
                     );
                 }
                 GroupAddOutcome::GroupNotFound => {
-                    println!("group not found: id={}", command.group_id);
+                    println!("group '{}' not found", command.group_id);
                 }
                 GroupAddOutcome::AgentNotFound => {
-                    println!("agent not found or disabled: id={}", command.agent_id);
+                    println!("agent '{}' not found or disabled", command.agent_id);
                 }
             }
         }
@@ -144,21 +147,21 @@ pub(super) async fn run(
             match outcome {
                 GroupRemoveOutcome::Removed => {
                     println!(
-                        "agent removed from group: group_id={}, agent_id={}",
+                        "agent '{}' removed from '{}'",
                         command.group_id, command.agent_id
                     );
                 }
                 GroupRemoveOutcome::NotMember => {
                     println!(
-                        "agent not in group (no action): group_id={}, agent_id={}",
+                        "agent '{}' not in '{}', no action performed",
                         command.group_id, command.agent_id
                     );
                 }
                 GroupRemoveOutcome::GroupNotFound => {
-                    println!("group not found: id={}", command.group_id);
+                    println!("group '{}' not found", command.group_id);
                 }
                 GroupRemoveOutcome::AgentNotFound => {
-                    println!("agent not found or disabled: id={}", command.agent_id);
+                    println!("agent '{}' not found or disabled", command.agent_id);
                 }
             }
         }
@@ -178,41 +181,41 @@ pub(super) async fn run(
                 } => match (removed_from_old_group, added_to_new_group) {
                     (true, true) => {
                         println!(
-                            "agent moved: agent_id={}, from={}, to={}",
+                            "agent '{}' moved from '{}' to '{}'",
                             command.agent_id, command.old_group_id, command.new_group_id
                         );
                     }
                     (true, false) => {
                         println!(
-                            "agent removed from old group; already in destination group: agent_id={}, from={}, to={}",
+                            "agent '{}' removed from '{}', already in '{}'",
                             command.agent_id, command.old_group_id, command.new_group_id
                         );
                     }
                     (false, true) => {
                         println!(
-                            "agent added to destination group; was not in source group: agent_id={}, from={}, to={}",
-                            command.agent_id, command.old_group_id, command.new_group_id
+                            "agent '{}' added to '{}', was not in '{}'",
+                            command.agent_id, command.new_group_id, command.old_group_id
                         );
                     }
                     (false, false) => {
                         println!(
-                            "no move performed (already absent from source and present in destination): agent_id={}, from={}, to={}",
+                            "no move performed for agent '{}', already absent from '{}' and present in '{}'",
                             command.agent_id, command.old_group_id, command.new_group_id
                         );
                     }
                 },
                 GroupMoveOutcome::SourceGroupNotFound => {
-                    println!("source group not found: id={}", command.old_group_id);
+                    println!("group '{}' not found", command.old_group_id);
                 }
                 GroupMoveOutcome::DestinationGroupNotFound => {
-                    println!("destination group not found: id={}", command.new_group_id);
+                    println!("group '{}' not found", command.new_group_id);
                 }
                 GroupMoveOutcome::AgentNotFound => {
-                    println!("agent not found or disabled: id={}", command.agent_id);
+                    println!("agent '{}' not found or disabled", command.agent_id);
                 }
                 GroupMoveOutcome::SameGroup => {
                     println!(
-                        "source and destination groups are identical (no action): id={}",
+                        "source and destination groups '{}' are identical, no action performed",
                         command.old_group_id
                     );
                 }
@@ -225,10 +228,10 @@ pub(super) async fn run(
 
             match outcome {
                 GroupSetNameOutcome::Updated => {
-                    println!("group display name updated: id={}", command.group_id);
+                    println!("group '{}' display name updated", command.group_id);
                 }
                 GroupSetNameOutcome::GroupNotFound => {
-                    println!("group not found: id={}", command.group_id);
+                    println!("group '{}' not found", command.group_id);
                 }
             }
         }
@@ -236,10 +239,10 @@ pub(super) async fn run(
             let outcome = database.admin_delete_agent_group(&command.group_id).await?;
             match outcome {
                 GroupDeleteOutcome::Deleted => {
-                    println!("group deleted: id={}", command.group_id);
+                    println!("group '{}' deleted", command.group_id);
                 }
                 GroupDeleteOutcome::NotFound => {
-                    println!("group not found: id={}", command.group_id);
+                    println!("group '{}' not found", command.group_id);
                 }
             }
         }
