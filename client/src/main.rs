@@ -20,9 +20,6 @@ use alaric_lib::{
     security::noise::types::Keypair,
 };
 use tokio::net::TcpStream;
-use tracing::info;
-
-mod signal;
 
 const CLIENT_IDENTITY_BUNDLE_PATH_ENV: &str = "CLIENT_IDENTITY_BUNDLE_PATH";
 const CLIENT_PEER_ATTESTATION_POLICY_PATH_ENV: &str = "CLIENT_PEER_ATTESTATION_POLICY_PATH";
@@ -52,10 +49,6 @@ enum CliCommand {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    tracing_subscriber::fmt::init();
-    let shutdown = signal::shutdown_signal();
-    tokio::pin!(shutdown);
-
     let cli_command = match parse_cli_args(env::args().skip(1)) {
         Ok(CliParseOutcome::Run(command)) => command,
         Ok(CliParseOutcome::PrintHelp) => {
@@ -77,27 +70,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     match cli_command {
         CliCommand::ListAgents => {
-            let response = tokio::select! {
-                result = fetch_discovery(&client_id, &auth_key_id, &auth_private_key) => result?,
-                _ = &mut shutdown => {
-                    info!("shutdown signal received before discovery request, exiting");
-                    return Ok(());
-                }
-            };
+            let response = fetch_discovery(&client_id, &auth_key_id, &auth_private_key).await?;
             print_discovered_agents(&response);
             Ok(())
         }
         CliCommand::Run(run_args) => {
-            let attestation_policy = load_client_peer_attestation_policy()?;
-            let identity_bundle = load_client_identity_bundle()?;
-            let targets = tokio::select! {
-                result = resolve_targets(&run_args, &client_id, &auth_key_id, &auth_private_key) => result?,
-                _ = &mut shutdown => {
-                    info!("shutdown signal received before target resolution, exiting");
-                    return Ok(());
-                }
-            };
-
+            let attestation_policy = load_attestation_policy()?;
+            let identity_bundle = load_identity()?;
+            let targets =
+                resolve_targets(&run_args, &client_id, &auth_key_id, &auth_private_key).await?;
             let multi_target = targets.len() > 1;
             let mut failed_targets = Vec::new();
             for target in targets {
@@ -105,25 +86,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     println!("==> target={}", target);
                 }
 
-                let command_result = tokio::select! {
-                    result = run_command_for_target(
-                        &client_id,
-                        &target,
-                        &run_args,
-                        &auth_key_id,
-                        &auth_private_key,
-                        &attestation_policy,
-                        identity_bundle.as_ref(),
-                        multi_target,
-                    ) => result,
-                    _ = &mut shutdown => {
-                        info!("shutdown signal received while running commands, exiting");
-                        return Ok(());
-                    }
-                };
-
+                let command_result = run_cmd(
+                    &client_id,
+                    &target,
+                    &run_args,
+                    &auth_key_id,
+                    &auth_private_key,
+                    &attestation_policy,
+                    identity_bundle.as_ref(),
+                    multi_target,
+                )
+                .await;
                 if let Err(err) = command_result {
-                    eprintln!("target {} failed: {}", target, err);
+                    println!("target {} failed: {}", target, err);
                     failed_targets.push(target.to_string());
                 }
             }
@@ -199,7 +174,7 @@ async fn fetch_discovery(
     Ok(response)
 }
 
-async fn run_command_for_target(
+async fn run_cmd(
     client_id: &ClientId,
     target_agent_id: &AgentId,
     run_args: &RunCliArgs,
@@ -243,7 +218,7 @@ async fn run_command_for_target(
             AgentMessage::Started {
                 request_id: message_request_id,
             } if message_request_id == request_id => {
-                info!(
+                println!(
                     "command started (target_agent_id={}, request_id={})",
                     target_agent_id, request_id
                 );
@@ -253,7 +228,7 @@ async fn run_command_for_target(
                 stream: output_stream,
                 chunk,
             } if message_request_id == request_id => {
-                print_command_output(target_agent_id, output_stream, &chunk, multi_target)?;
+                print_output(target_agent_id, output_stream, &chunk, multi_target)?;
             }
             AgentMessage::Completed {
                 request_id: message_request_id,
@@ -261,7 +236,7 @@ async fn run_command_for_target(
                 timed_out,
                 truncated,
             } if message_request_id == request_id => {
-                info!(
+                println!(
                     "command completed (target_agent_id={}, request_id={}, exit_code={}, timed_out={}, truncated={})",
                     target_agent_id, request_id, exit_code, timed_out, truncated
                 );
@@ -294,7 +269,7 @@ async fn run_command_for_target(
     Ok(())
 }
 
-fn print_command_output(
+fn print_output(
     target_agent_id: &AgentId,
     stream: OutputStream,
     chunk: &str,
@@ -353,7 +328,7 @@ async fn connect_authenticated(
 ) -> Result<AuthenticatedConnection, Box<dyn Error>> {
     let addr = format!("127.0.0.1:{}", DEFAULT_SERVER_PORT);
     let mut stream = TcpStream::connect(addr).await?;
-    info!("connected to {}", stream.peer_addr()?);
+    println!("connected to {}", stream.peer_addr()?);
 
     write_json_frame(&mut stream, request).await?;
 
@@ -376,7 +351,7 @@ async fn connect_authenticated(
                 HandshakeRequest::ClientDiscovery { client_id, .. } => client_id.to_string(),
                 HandshakeRequest::Agent { .. } => "<agent-request>".to_string(),
             };
-            info!(
+            println!(
                 "handshake accepted (client_id={}, {}, session_id={})",
                 client_context,
                 request_context(request),
@@ -400,9 +375,9 @@ async fn connect_authenticated(
     }
 }
 
-fn load_client_peer_attestation_policy() -> Result<PeerAttestationPolicy, Box<dyn Error>> {
+fn load_attestation_policy() -> Result<PeerAttestationPolicy, Box<dyn Error>> {
     let Some(path) = env::var(CLIENT_PEER_ATTESTATION_POLICY_PATH_ENV).ok() else {
-        info!(
+        println!(
             "{} not set; using default peer attestation policy (default_mode=preferred)",
             CLIENT_PEER_ATTESTATION_POLICY_PATH_ENV
         );
@@ -410,17 +385,17 @@ fn load_client_peer_attestation_policy() -> Result<PeerAttestationPolicy, Box<dy
     };
 
     let policy = PeerAttestationPolicy::load_from_path(&path)?;
-    info!("loaded peer attestation policy from {}", path);
+    println!("loaded peer attestation policy from {}", path);
     Ok(policy)
 }
 
-fn load_client_identity_bundle() -> Result<Option<IdentityBundle>, Box<dyn Error>> {
+fn load_identity() -> Result<Option<IdentityBundle>, Box<dyn Error>> {
     let configured_identity_bundle_path = env::var(CLIENT_IDENTITY_BUNDLE_PATH_ENV).ok();
     let identity_bundle_path = configured_identity_bundle_path
         .clone()
         .unwrap_or_else(|| DEFAULT_CLIENT_IDENTITY_BUNDLE_PATH.to_string());
     if configured_identity_bundle_path.is_none() && !Path::new(&identity_bundle_path).exists() {
-        info!(
+        println!(
             "identity bundle '{}' not found; peer attestation will fall back based on policy",
             identity_bundle_path
         );
@@ -432,7 +407,7 @@ fn load_client_identity_bundle() -> Result<Option<IdentityBundle>, Box<dyn Error
     let trusted_keys = TrustedIdentityKeys::load_from_path(&trusted_keys_path)?;
 
     let identity_bundle = IdentityBundle::load_from_path(&identity_bundle_path, &trusted_keys)?;
-    info!(
+    println!(
         "loaded client identity bundle from {} (expires_at_unix={})",
         identity_bundle_path,
         identity_bundle.expires_at_unix()
