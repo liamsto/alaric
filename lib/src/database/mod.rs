@@ -16,7 +16,7 @@ pub use admin_store::{
 pub use auth_listener::{AuthConfigListener, AuthConfigListenerError, AuthConfigNotification};
 pub use server_store::{ActivePrincipalKey, PruneLogsResult, ServerStoreError};
 
-use std::{error::Error, fmt, time::Duration};
+use std::{env, error::Error, fmt, io, time::Duration};
 
 use sqlx::{
     PgPool,
@@ -104,6 +104,8 @@ pub struct Database {
 pub enum DatabaseInitError {
     Connect(sqlx::Error),
     Migrate(MigrateError),
+    PruneLogs(ServerStoreError),
+    EnvVar(io::Error),
 }
 
 impl fmt::Display for DatabaseInitError {
@@ -113,6 +115,10 @@ impl fmt::Display for DatabaseInitError {
                 write!(f, "failed to connect to postgres: {}", source)
             }
             DatabaseInitError::Migrate(source) => write!(f, "failed to run migrations: {}", source),
+            DatabaseInitError::PruneLogs(source) => write!(f, "failed to prune logs: {}", source),
+            DatabaseInitError::EnvVar(source) => {
+                write!(f, "invalid database environment: {}", source)
+            }
         }
     }
 }
@@ -158,5 +164,54 @@ impl Database {
 
     pub async fn close(self) {
         self.pool.close().await;
+    }
+
+    pub async fn from_env() -> Result<Self, DatabaseInitError> {
+        let database_url = env::var("DATABASE_URL").map_err(|_| {
+            DatabaseInitError::EnvVar(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "DATABASE_URL must be set for the server",
+            ))
+        })?;
+
+        let mut config = DatabaseConfig::new(database_url);
+        if let Ok(raw) = env::var("DATABASE_MAX_CONNECTIONS") {
+            config.max_connections = raw.parse::<u32>().map_err(|err| {
+                DatabaseInitError::EnvVar(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid DATABASE_MAX_CONNECTIONS '{}': {}", raw, err),
+                ))
+            })?;
+        }
+        if let Ok(raw) = env::var("DATABASE_ACQUIRE_TIMEOUT_SECS") {
+            let seconds = raw.parse::<u64>().map_err(|err| {
+                DatabaseInitError::EnvVar(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid DATABASE_ACQUIRE_TIMEOUT_SECS '{}': {}", raw, err),
+                ))
+            })?;
+            config.acquire_timeout = Duration::from_secs(seconds);
+        }
+        if let Ok(raw) = env::var("LOG_RETENTION_DAYS") {
+            let days = raw.parse::<u16>().map_err(|err| {
+                DatabaseInitError::EnvVar(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid LOG_RETENTION_DAYS '{}': {}", raw, err),
+                ))
+            })?;
+            config.log_retention_days = LogRetentionDays::new(days).map_err(|err| {
+                DatabaseInitError::EnvVar(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid LOG_RETENTION_DAYS: {}", err),
+                ))
+            })?;
+        }
+
+        let database = Database::connect_and_migrate(&config).await?;
+        database
+            .prune_logs()
+            .await
+            .map_err(DatabaseInitError::PruneLogs)?;
+        Ok(database)
     }
 }

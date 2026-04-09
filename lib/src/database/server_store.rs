@@ -851,7 +851,7 @@ impl Database {
         Ok(())
     }
 
-    pub async fn prune_phase1_logs(&self) -> Result<PruneLogsResult, ServerStoreError> {
+    pub async fn prune_logs(&self) -> Result<PruneLogsResult, ServerStoreError> {
         let retention_days = i32::from(self.log_retention_days().get());
         let row = sqlx::query_as!(
             PruneLogsRow,

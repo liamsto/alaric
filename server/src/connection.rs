@@ -12,9 +12,8 @@ use crate::{
 };
 use alaric_lib::database::Database;
 use alaric_lib::protocol::{
-    AgentDiscoveryEntry, AgentId, AgentPresenceStatus, ClientId, HandshakeErrorCode,
-    HandshakeProofRequest, HandshakeRequest, ListAgentsResponse, PROTOCOL_VERSION, SessionId,
-    read_json_frame, write_json_frame,
+    AgentId, ClientId, HandshakeErrorCode, HandshakeProofRequest, HandshakeRequest,
+    ListAgentsResponse, PROTOCOL_VERSION, SessionId, read_json_frame, write_json_frame,
 };
 use serde_json::Value;
 use tokio::{
@@ -27,24 +26,21 @@ use tracing::{info, warn};
 
 const PRESENCE_HEARTBEAT_INTERVAL_SECS: u64 = 10;
 
-pub(crate) async fn handle_connection(
-    mut stream: TcpStream,
-    state: ServerState,
-) -> Result<(), BoxError> {
+pub async fn handle_connection(mut stream: TcpStream, state: ServerState) -> Result<(), BoxError> {
     let peer = stream.peer_addr()?;
     let request = match read_json_frame::<_, HandshakeRequest>(&mut stream).await {
         Ok(request) => request,
         Err(err) => {
-            if let Some(database) = &state.database
-                && let Err(store_err) = database
-                    .record_session_rejection(
-                        SessionId::new_random(),
-                        None,
-                        HandshakeErrorCode::InvalidRequest,
-                        &format!("invalid handshake: {}", err),
-                        peer,
-                    )
-                    .await
+            if let Err(store_err) = &state
+                .database
+                .record_session_rejection(
+                    SessionId::new_random(),
+                    None,
+                    HandshakeErrorCode::InvalidRequest,
+                    &format!("invalid handshake: {}", err),
+                    peer,
+                )
+                .await
             {
                 warn!(
                     "failed to persist invalid handshake rejection: {}",
@@ -63,20 +59,20 @@ pub(crate) async fn handle_connection(
     };
 
     if request.protocol_version() != PROTOCOL_VERSION {
-        if let Some(database) = &state.database
-            && let Err(store_err) = database
-                .record_session_rejection(
-                    SessionId::new_random(),
-                    Some(&request),
-                    HandshakeErrorCode::UnsupportedProtocolVersion,
-                    &format!(
-                        "server protocol version is {}, got {}",
-                        PROTOCOL_VERSION,
-                        request.protocol_version()
-                    ),
-                    peer,
-                )
-                .await
+        if let Err(store_err) = &state
+            .database
+            .record_session_rejection(
+                SessionId::new_random(),
+                Some(&request),
+                HandshakeErrorCode::UnsupportedProtocolVersion,
+                &format!(
+                    "server protocol version is {}, got {}",
+                    PROTOCOL_VERSION,
+                    request.protocol_version()
+                ),
+                peer,
+            )
+            .await
         {
             warn!(
                 "failed to persist protocol-version rejection: {}",
@@ -100,16 +96,16 @@ pub(crate) async fn handle_connection(
     let challenge = match authenticator.issue_challenge(&request).await {
         Ok(challenge) => challenge,
         Err(err) => {
-            if let Some(database) = &state.database
-                && let Err(store_err) = database
-                    .record_session_rejection(
-                        SessionId::new_random(),
-                        Some(&request),
-                        HandshakeErrorCode::Unauthorized,
-                        &format!("handshake authentication failed: {}", err),
-                        peer,
-                    )
-                    .await
+            if let Err(store_err) = &state
+                .database
+                .record_session_rejection(
+                    SessionId::new_random(),
+                    Some(&request),
+                    HandshakeErrorCode::Unauthorized,
+                    &format!("handshake authentication failed: {}", err),
+                    peer,
+                )
+                .await
             {
                 warn!(
                     "failed to persist challenge issuance rejection: {}",
@@ -132,16 +128,16 @@ pub(crate) async fn handle_connection(
     let proof_request = match read_json_frame::<_, HandshakeProofRequest>(&mut stream).await {
         Ok(proof_request) => proof_request,
         Err(err) => {
-            if let Some(database) = &state.database
-                && let Err(store_err) = database
-                    .record_session_rejection(
-                        SessionId::new_random(),
-                        Some(&request),
-                        HandshakeErrorCode::InvalidRequest,
-                        &format!("invalid auth proof request: {}", err),
-                        peer,
-                    )
-                    .await
+            if let Err(store_err) = &state
+                .database
+                .record_session_rejection(
+                    SessionId::new_random(),
+                    Some(&request),
+                    HandshakeErrorCode::InvalidRequest,
+                    &format!("invalid auth proof request: {}", err),
+                    peer,
+                )
+                .await
             {
                 warn!("failed to persist auth-proof rejection: {}", store_err);
             }
@@ -160,16 +156,16 @@ pub(crate) async fn handle_connection(
         .authenticate(&request, &challenge, &proof_request)
         .await
     {
-        if let Some(database) = &state.database
-            && let Err(store_err) = database
-                .record_session_rejection(
-                    SessionId::new_random(),
-                    Some(&request),
-                    HandshakeErrorCode::Unauthorized,
-                    &format!("handshake authentication failed: {}", err),
-                    peer,
-                )
-                .await
+        if let Err(store_err) = &state
+            .database
+            .record_session_rejection(
+                SessionId::new_random(),
+                Some(&request),
+                HandshakeErrorCode::Unauthorized,
+                &format!("handshake authentication failed: {}", err),
+                peer,
+            )
+            .await
         {
             warn!("failed to persist unauthorized rejection: {}", store_err);
         }
@@ -226,16 +222,16 @@ async fn handle_agent(
     };
 
     if duplicate_agent {
-        if let Some(database) = &state.database
-            && let Err(store_err) = database
-                .record_session_rejection(
-                    SessionId::new_random(),
-                    Some(&agent_request),
-                    HandshakeErrorCode::AgentIdInUse,
-                    &format!("agent id '{}' is already connected", agent_id),
-                    peer,
-                )
-                .await
+        if let Err(store_err) = &state
+            .database
+            .record_session_rejection(
+                SessionId::new_random(),
+                Some(&agent_request),
+                HandshakeErrorCode::AgentIdInUse,
+                &format!("agent id '{}' is already connected", agent_id),
+                peer,
+            )
+            .await
         {
             warn!("failed to persist duplicate-agent rejection: {}", store_err);
         }
@@ -256,10 +252,10 @@ async fn handle_agent(
         state.agents.write().await.remove(&agent_id);
         return Err(Box::new(err));
     }
-    if let Some(database) = &state.database
-        && let Err(store_err) = database
-            .record_agent_waiting(session_id, &agent_id, &presence_metadata, peer)
-            .await
+    if let Err(store_err) = &state
+        .database
+        .record_agent_waiting(session_id, &agent_id, &presence_metadata, peer)
+        .await
     {
         warn!("failed to persist agent waiting state: {}", store_err);
     }
@@ -277,8 +273,7 @@ async fn handle_agent(
                 Ok(client_stream) => client_stream,
                 Err(_) => {
                     state.agents.write().await.remove(&agent_id);
-                    if let Some(database) = &state.database
-                        && let Err(store_err) = database
+                    if let Err(store_err) = &state.database
                             .record_agent_disconnected(
                                 session_id,
                                 &agent_id,
@@ -320,8 +315,7 @@ async fn handle_agent(
                 }
             }
             state.agents.write().await.remove(&agent_id);
-            if let Some(database) = &state.database
-                && let Err(store_err) = database
+            if let Err(store_err) = &state.database
                     .record_agent_disconnected(
                         session_id,
                         &agent_id,
@@ -353,19 +347,18 @@ async fn handle_agent(
 
     stop_presence_heartbeat(&heartbeat_shutdown);
     state.agents.write().await.remove(&agent_id);
-    if let Some(database) = &state.database {
-        let mark_disconnect_as_error = tunnel_result.is_err();
-        if let Err(store_err) = database
-            .record_agent_disconnected(
-                session_id,
-                &agent_id,
-                "agent disconnected",
-                mark_disconnect_as_error,
-            )
-            .await
-        {
-            warn!("failed to persist agent disconnection: {}", store_err);
-        }
+    let mark_disconnect_as_error = tunnel_result.is_err();
+    if let Err(store_err) = &state
+        .database
+        .record_agent_disconnected(
+            session_id,
+            &agent_id,
+            "agent disconnected",
+            mark_disconnect_as_error,
+        )
+        .await
+    {
+        warn!("failed to persist agent disconnection: {}", store_err);
     }
     info!("agent disconnected: {} (agent_id={})", peer, agent_id);
     Ok(())
@@ -380,16 +373,16 @@ async fn handle_client(
 ) -> Result<(), BoxError> {
     let client_request = HandshakeRequest::client(client_id.clone(), target_agent_id.clone());
     let Some(waiting_agent) = state.agents.write().await.remove(&target_agent_id) else {
-        if let Some(database) = &state.database
-            && let Err(store_err) = database
-                .record_session_rejection(
-                    SessionId::new_random(),
-                    Some(&client_request),
-                    HandshakeErrorCode::AgentUnavailable,
-                    &format!("target agent '{}' is not connected", target_agent_id),
-                    peer,
-                )
-                .await
+        if let Err(store_err) = &state
+            .database
+            .record_session_rejection(
+                SessionId::new_random(),
+                Some(&client_request),
+                HandshakeErrorCode::AgentUnavailable,
+                &format!("target agent '{}' is not connected", target_agent_id),
+                peer,
+            )
+            .await
         {
             warn!(
                 "failed to persist unavailable-agent rejection: {}",
@@ -425,10 +418,10 @@ async fn handle_client(
         return Err(Box::new(err));
     }
 
-    if let Some(database) = &state.database
-        && let Err(store_err) = database
-            .record_client_pairing(session_id, &client_id, &target_agent_id, peer)
-            .await
+    if let Err(store_err) = &state
+        .database
+        .record_client_pairing(session_id, &client_id, &target_agent_id, peer)
+        .await
     {
         warn!("failed to persist client pairing: {}", store_err);
     }
@@ -455,74 +448,69 @@ async fn handle_client_discovery(
     client_id: ClientId,
 ) -> Result<(), BoxError> {
     let discovery_request = HandshakeRequest::client_discovery(client_id.clone());
-    let (discovered_agents, discovered_groups) = if let Some(database) = &state.database {
-        let agents = match database.list_discoverable_agents().await {
-            Ok(agents) => agents,
-            Err(err) => {
-                warn!("failed to load discoverable agents: {}", err);
-                if let Err(store_err) = database
-                    .record_session_rejection(
-                        SessionId::new_random(),
-                        Some(&discovery_request),
-                        HandshakeErrorCode::InternalError,
-                        &format!("failed to list agents: {}", err),
-                        peer,
-                    )
-                    .await
-                {
-                    warn!("failed to persist discovery-list rejection: {}", store_err);
-                }
-                send_reject(
-                    &mut stream,
-                    HandshakeErrorCode::InternalError,
-                    "failed to list agents",
-                )
-                .await?;
-                return Ok(());
-            }
-        };
+    let database = &state.database;
 
-        let groups = match database.list_discoverable_agent_groups().await {
-            Ok(groups) => groups,
-            Err(err) => {
-                warn!("failed to load discoverable agent groups: {}", err);
-                if let Err(store_err) = database
-                    .record_session_rejection(
-                        SessionId::new_random(),
-                        Some(&discovery_request),
-                        HandshakeErrorCode::InternalError,
-                        &format!("failed to list agent groups: {}", err),
-                        peer,
-                    )
-                    .await
-                {
-                    warn!("failed to persist discovery-group rejection: {}", store_err);
-                }
-                send_reject(
-                    &mut stream,
+    let agents = match database.list_discoverable_agents().await {
+        Ok(agents) => agents,
+        Err(err) => {
+            warn!("failed to load discoverable agents: {}", err);
+            if let Err(store_err) = database
+                .record_session_rejection(
+                    SessionId::new_random(),
+                    Some(&discovery_request),
                     HandshakeErrorCode::InternalError,
-                    "failed to list agent groups",
+                    &format!("failed to list agents: {}", err),
+                    peer,
                 )
-                .await?;
-                return Ok(());
+                .await
+            {
+                warn!("failed to persist discovery-list rejection: {}", store_err);
             }
-        };
-
-        (agents, groups)
-    } else {
-        (
-            list_discoverable_agents_from_registry(&state).await,
-            Vec::new(),
-        )
+            send_reject(
+                &mut stream,
+                HandshakeErrorCode::InternalError,
+                "failed to list agents",
+            )
+            .await?;
+            return Ok(());
+        }
     };
+
+    let groups = match database.list_discoverable_agent_groups().await {
+        Ok(groups) => groups,
+        Err(err) => {
+            warn!("failed to load discoverable agent groups: {}", err);
+            if let Err(store_err) = database
+                .record_session_rejection(
+                    SessionId::new_random(),
+                    Some(&discovery_request),
+                    HandshakeErrorCode::InternalError,
+                    &format!("failed to list agent groups: {}", err),
+                    peer,
+                )
+                .await
+            {
+                warn!("failed to persist discovery-group rejection: {}", store_err);
+            }
+            send_reject(
+                &mut stream,
+                HandshakeErrorCode::InternalError,
+                "failed to list agent groups",
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    let (discovered_agents, discovered_groups) = (agents, groups);
 
     let session_id = state.next_session_id();
     send_accept(&mut stream, session_id).await?;
 
-    if let Some(database) = &state.database
-        && let Err(store_err) = database
-            .record_client_discovery(session_id, &client_id, peer)
-            .await
+    if let Err(store_err) = state
+        .database
+        .record_client_discovery(session_id, &client_id, peer)
+        .await
     {
         warn!("failed to persist client discovery session: {}", store_err);
     }
@@ -544,14 +532,10 @@ async fn handle_client_discovery(
 }
 
 fn spawn_presence_heartbeat(
-    database: Option<Arc<Database>>,
+    database: Arc<Database>,
     session_id: SessionId,
     agent_id: AgentId,
 ) -> Option<watch::Sender<bool>> {
-    let Some(database) = database else {
-        return None;
-    };
-
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(PRESENCE_HEARTBEAT_INTERVAL_SECS));
@@ -579,24 +563,6 @@ fn stop_presence_heartbeat(shutdown: &Option<watch::Sender<bool>>) {
     if let Some(shutdown) = shutdown {
         let _ = shutdown.send(true);
     }
-}
-
-async fn list_discoverable_agents_from_registry(state: &ServerState) -> Vec<AgentDiscoveryEntry> {
-    let registry = state.agents.read().await;
-    let mut agent_ids = registry.keys().cloned().collect::<Vec<_>>();
-    agent_ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
-
-    agent_ids
-        .into_iter()
-        .map(|agent_id| AgentDiscoveryEntry {
-            agent_id,
-            display_name: None,
-            capabilities: Vec::new(),
-            tags: Vec::new(),
-            status: AgentPresenceStatus::Online,
-            status_age_secs: 0,
-        })
-        .collect()
 }
 
 fn build_presence_metadata(handshake_metadata: &BTreeMap<String, String>) -> Value {
