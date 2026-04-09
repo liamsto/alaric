@@ -136,7 +136,7 @@ pub(super) async fn run(
             match outcome {
                 KeyRevokeOutcome::Revoked => {
                     println!(
-                        "key '{}' revoked for {} with id '{}'",
+                        "key '{}' revoked for {} '{}'",
                         command.key_id,
                         principal_kind_name(kind),
                         command.external_id,
@@ -144,7 +144,7 @@ pub(super) async fn run(
                 }
                 KeyRevokeOutcome::AlreadyRevoked => {
                     println!(
-                        "key '{}' already revoked for {} with id '{}'",
+                        "key '{}' already revoked for {} '{}'",
                         command.key_id,
                         principal_kind_name(kind),
                         command.external_id,
@@ -152,7 +152,7 @@ pub(super) async fn run(
                 }
                 KeyRevokeOutcome::KeyNotFound => {
                     println!(
-                        "key '{}' not found for {} with id '{}'",
+                        "key '{}' not found for {} '{}'",
                         command.key_id,
                         principal_kind_name(kind),
                         command.external_id,
