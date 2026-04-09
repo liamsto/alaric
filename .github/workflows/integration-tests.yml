@@ -25,6 +25,8 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: alaric_test
+        ports:
+          - 5432:5432
         options: >-
           --health-cmd "pg_isready -U postgres -d alaric_test"
           --health-interval 10s
@@ -45,6 +47,17 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-targets: false
+
+      - name: Wait for Postgres on runner host
+        run: |
+          for i in {1..30}; do
+            if pg_isready -h localhost -p 5432 -U postgres -d alaric_test; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Postgres did not become ready on localhost:5432 in time"
+          exit 1
 
       - name: Run server integration tests
         run: cargo test -p alaric-server --tests --locked
