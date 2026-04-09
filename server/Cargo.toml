@@ -3,6 +3,9 @@ name = "alaric-server"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [dependencies]
 tokio = { version = "1.51.0", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal"] }
 tracing = "0.1.44"
