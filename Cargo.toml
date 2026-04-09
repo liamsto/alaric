@@ -15,8 +15,6 @@ resolver = "3"
 unsafe_code = "forbid"
 
 [workspace.lints.clippy]
-missing_panics_doc = "warn"
-missing_errors_doc = "warn"
 unwrap_used = "warn"
 expect_used = "warn"
 panic = "warn"
