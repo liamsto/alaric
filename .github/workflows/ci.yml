@@ -39,7 +39,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked
 
       - name: Run tests
-        run: cargo test --workspace --all-targets --locked
+        run: cargo test --workspace --lib --bins --locked
 
       - name: Build all crates
         run: cargo build --workspace --locked
