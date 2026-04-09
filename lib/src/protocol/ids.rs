@@ -65,6 +65,7 @@ impl AgentId {
         Ok(Self(value))
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -96,6 +97,47 @@ impl<'de> Deserialize<'de> for AgentId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AgentGroupId(String);
+
+impl AgentGroupId {
+    pub fn new(value: impl Into<String>) -> Result<Self, IdError> {
+        let value = value.into();
+        validate_id("agent_group", &value)?;
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for AgentGroupId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Serialize for AgentGroupId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for AgentGroupId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        AgentGroupId::new(value).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ClientId(String);
 
 impl ClientId {
@@ -105,6 +147,7 @@ impl ClientId {
         Ok(Self(value))
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -142,6 +185,7 @@ pub struct SessionId(Uuid);
 pub struct SessionIdError(String);
 
 impl SessionId {
+    #[must_use]
     pub fn new_random() -> Self {
         let mut bytes = random::<[u8; 16]>();
         // RFC 4122 v4 UUID layout.
@@ -150,7 +194,8 @@ impl SessionId {
         Self(Uuid::from_bytes(bytes))
     }
 
-    pub fn as_uuid(self) -> Uuid {
+    #[must_use]
+    pub const fn as_uuid(self) -> Uuid {
         self.0
     }
 }

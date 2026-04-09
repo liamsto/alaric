@@ -1,29 +1,53 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet, HashMap},
     env,
     error::Error,
     io::{self, Write},
+    path::Path,
 };
 
 use alaric_lib::{
     constants::DEFAULT_SERVER_PORT,
     protocol::{
-        AgentId, AgentMessage, ClientId, ClientMessage, CommandId, HandshakeProofRequest,
-        HandshakeRequest, HandshakeResponse, OutputStream, RequestId, SecureChannel,
-        build_auth_proof_ed25519, read_json_frame, recv_secure_json, send_secure_json,
+        AgentGroupId, AgentId, AgentMessage, ClientId, ClientMessage, CommandId,
+        HandshakeProofRequest, HandshakeRequest, HandshakeResponse, IdentityBundle,
+        ListAgentsResponse, OutputStream, PeerAttestationInit, PeerAttestationMode,
+        PeerAttestationPolicy, PeerAttestationResult, RequestId, Role, SecureChannel, SessionId,
+        TrustedIdentityKeys, build_auth_proof_ed25519, build_peer_attestation_proof,
+        read_json_frame, recv_secure_json, send_secure_json, verify_peer_attestation_proof,
         write_json_frame,
     },
     security::noise::types::Keypair,
 };
-use tokio::{net::TcpStream, select};
+use tokio::net::TcpStream;
 use tracing::info;
 
 mod signal;
 
+const CLIENT_IDENTITY_BUNDLE_PATH_ENV: &str = "CLIENT_IDENTITY_BUNDLE_PATH";
+const CLIENT_PEER_ATTESTATION_POLICY_PATH_ENV: &str = "CLIENT_PEER_ATTESTATION_POLICY_PATH";
+const CLIENT_TRUSTED_KEYS_PATH_ENV: &str = "CLIENT_TRUSTED_KEYS_PATH";
+const DEFAULT_CLIENT_IDENTITY_BUNDLE_PATH: &str = "./identity-bundle.json";
+const DEFAULT_CLIENT_TRUSTED_KEYS_PATH: &str = "./policy-keys.json";
+
 #[derive(Debug)]
-struct CliArgs {
+struct RunCliArgs {
     command_id: CommandId,
     args: BTreeMap<String, String>,
+    targets: Vec<AgentId>,
+    groups: Vec<AgentGroupId>,
+}
+
+#[derive(Debug)]
+struct AuthenticatedConnection {
+    stream: TcpStream,
+    session_id: SessionId,
+}
+
+#[derive(Debug)]
+enum CliCommand {
+    Run(RunCliArgs),
+    ListAgents,
 }
 
 #[tokio::main]
@@ -32,8 +56,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let shutdown = signal::shutdown_signal();
     tokio::pin!(shutdown);
 
-    let cli = match parse_cli_args(env::args().skip(1)) {
-        Ok(CliParseOutcome::Run(cli)) => cli,
+    let cli_command = match parse_cli_args(env::args().skip(1)) {
+        Ok(CliParseOutcome::Run(command)) => command,
         Ok(CliParseOutcome::PrintHelp) => {
             println!("{}", usage_text());
             return Ok(());
@@ -43,149 +67,194 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    let addr = format!("127.0.0.1:{}", DEFAULT_SERVER_PORT);
     let client_id = ClientId::new(
         env::var("CLIENT_ID").unwrap_or_else(|_| format!("client-{}", std::process::id())),
     )?;
-    let target_agent_id =
-        AgentId::new(env::var("TARGET_AGENT_ID").unwrap_or_else(|_| "agent-default".into()))?;
     let auth_key_id = env::var("CLIENT_AUTH_KEY_ID")
         .map_err(|_| "CLIENT_AUTH_KEY_ID must be set for handshake authentication")?;
     let auth_private_key = env::var("CLIENT_AUTH_PRIVATE_KEY")
         .map_err(|_| "CLIENT_AUTH_PRIVATE_KEY must be set for handshake authentication")?;
 
-    let mut stream = tokio::select! {
-        connect_result = TcpStream::connect(addr) => connect_result?,
-        _ = &mut shutdown => {
-            info!("shutdown signal received before connect, exiting");
-            return Ok(());
-        }
-    };
-    info!("connected to {}", stream.peer_addr()?);
-    let request = HandshakeRequest::client(client_id.clone(), target_agent_id.clone());
-    tokio::select! {
-        write_result = write_json_frame(&mut stream, &request) => write_result?,
-        _ = &mut shutdown => {
-            info!("shutdown signal received during handshake, exiting");
-            return Ok(());
-        }
-    }
-
-    let response = tokio::select! {
-        read_result = read_json_frame::<_, HandshakeResponse>(&mut stream) => read_result?,
-        _ = &mut shutdown => {
-            info!("shutdown signal received while waiting for handshake response, exiting");
-            return Ok(());
-        }
-    };
-
-    let response = match response {
-        HandshakeResponse::Challenge(challenge) => {
-            let proof =
-                build_auth_proof_ed25519(&request, &challenge, &auth_key_id, &auth_private_key)?;
-            let proof_request = HandshakeProofRequest::new(proof);
-            select! {
-                write_result = write_json_frame(&mut stream, &proof_request) => write_result?,
+    match cli_command {
+        CliCommand::ListAgents => {
+            let response = tokio::select! {
+                result = fetch_discovery(&client_id, &auth_key_id, &auth_private_key) => result?,
                 _ = &mut shutdown => {
-                    info!("shutdown signal received during auth proof exchange, exiting");
+                    info!("shutdown signal received before discovery request, exiting");
+                    return Ok(());
+                }
+            };
+            print_discovered_agents(&response);
+            Ok(())
+        }
+        CliCommand::Run(run_args) => {
+            let attestation_policy = load_client_peer_attestation_policy()?;
+            let identity_bundle = load_client_identity_bundle()?;
+            let targets = tokio::select! {
+                result = resolve_targets(&run_args, &client_id, &auth_key_id, &auth_private_key) => result?,
+                _ = &mut shutdown => {
+                    info!("shutdown signal received before target resolution, exiting");
                     return Ok(());
                 }
             };
 
-            select! {
-                read_result = read_json_frame::<_, HandshakeResponse>(&mut stream) => read_result?,
-                _ = &mut shutdown => {
-                    info!("shutdown signal received while waiting for handshake completion, exiting");
-                    return Ok(());
+            let multi_target = targets.len() > 1;
+            let mut failed_targets = Vec::new();
+            for target in targets {
+                if multi_target {
+                    println!("==> target={}", target);
+                }
+
+                let command_result = tokio::select! {
+                    result = run_command_for_target(
+                        &client_id,
+                        &target,
+                        &run_args,
+                        &auth_key_id,
+                        &auth_private_key,
+                        &attestation_policy,
+                        identity_bundle.as_ref(),
+                        multi_target,
+                    ) => result,
+                    _ = &mut shutdown => {
+                        info!("shutdown signal received while running commands, exiting");
+                        return Ok(());
+                    }
+                };
+
+                if let Err(err) = command_result {
+                    eprintln!("target {} failed: {}", target, err);
+                    failed_targets.push(target.to_string());
+                }
+            }
+
+            if failed_targets.is_empty() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "command failed for {} target(s): {}",
+                    failed_targets.len(),
+                    failed_targets.join(", ")
+                )
+                .into())
+            }
+        }
+    }
+}
+
+async fn resolve_targets(
+    run_args: &RunCliArgs,
+    client_id: &ClientId,
+    auth_key_id: &str,
+    auth_private_key: &str,
+) -> Result<Vec<AgentId>, Box<dyn Error>> {
+    let mut seen_targets = BTreeSet::new();
+    let mut targets = Vec::new();
+
+    for target in &run_args.targets {
+        if seen_targets.insert(target.as_str().to_string()) {
+            targets.push(target.clone());
+        }
+    }
+
+    if !run_args.groups.is_empty() {
+        let discovery = fetch_discovery(client_id, auth_key_id, auth_private_key).await?;
+        let group_members = discovery
+            .groups
+            .into_iter()
+            .map(|group| (group.group_id.as_str().to_string(), group.members))
+            .collect::<HashMap<_, _>>();
+
+        for group_id in &run_args.groups {
+            let Some(members) = group_members.get(group_id.as_str()) else {
+                return Err(format!("unknown agent group '{}'", group_id).into());
+            };
+
+            for member in members {
+                if seen_targets.insert(member.as_str().to_string()) {
+                    targets.push(member.clone());
                 }
             }
         }
-        HandshakeResponse::Accepted(accepted) => {
-            info!(
-                "handshake accepted (client_id={}, target_agent_id={}, session_id={})",
-                client_id, target_agent_id, accepted.session_id
-            );
-            HandshakeResponse::Accepted(accepted)
-        }
-        HandshakeResponse::Rejected(rejected) => {
-            return Err(format!(
-                "handshake rejected for client {} (target={}): {:?}: {}",
-                client_id, target_agent_id, rejected.code, rejected.message
-            )
-            .into());
-        }
-    };
+    }
 
-    match response {
-        HandshakeResponse::Accepted(accepted) => {
-            info!(
-                "handshake accepted (client_id={}, target_agent_id={}, session_id={})",
-                client_id, target_agent_id, accepted.session_id
-            );
-        }
-        HandshakeResponse::Rejected(rejected) => {
-            return Err(format!(
-                "handshake rejected for client {} (target={}): {:?}: {}",
-                client_id, target_agent_id, rejected.code, rejected.message
-            )
-            .into());
-        }
-        HandshakeResponse::Challenge(_) => {
-            return Err("unexpected second handshake challenge from server".into());
-        }
-    };
+    if targets.is_empty() {
+        let target_agent_id = AgentId::new(
+            env::var("TARGET_AGENT_ID").unwrap_or_else(|_| "agent-default".to_string()),
+        )?;
+        targets.push(target_agent_id);
+    }
 
-    let mut secure = select! {
-        secure_result = SecureChannel::handshake_xx_initiator(&mut stream, Keypair::default_keypair()) => secure_result?,
-        _ = &mut shutdown => {
-            info!("shutdown signal received before secure handshake, exiting");
-            return Ok(());
-        }
-    };
+    Ok(targets)
+}
+
+async fn fetch_discovery(
+    client_id: &ClientId,
+    auth_key_id: &str,
+    auth_private_key: &str,
+) -> Result<ListAgentsResponse, Box<dyn Error>> {
+    let request = HandshakeRequest::client_discovery(client_id.clone());
+    let mut connection = connect_authenticated(&request, auth_key_id, auth_private_key).await?;
+    let response = read_json_frame::<_, ListAgentsResponse>(&mut connection.stream).await?;
+    Ok(response)
+}
+
+async fn run_command_for_target(
+    client_id: &ClientId,
+    target_agent_id: &AgentId,
+    run_args: &RunCliArgs,
+    auth_key_id: &str,
+    auth_private_key: &str,
+    attestation_policy: &PeerAttestationPolicy,
+    identity_bundle: Option<&IdentityBundle>,
+    multi_target: bool,
+) -> Result<(), Box<dyn Error>> {
+    let request = HandshakeRequest::client(client_id.clone(), target_agent_id.clone());
+    let mut connection = connect_authenticated(&request, auth_key_id, auth_private_key).await?;
+    let mut secure =
+        SecureChannel::handshake_xx_initiator(&mut connection.stream, Keypair::default_keypair())
+            .await?;
+    perform_peer_attestation(
+        &mut secure,
+        &mut connection.stream,
+        &connection.session_id,
+        client_id,
+        target_agent_id,
+        auth_key_id,
+        auth_private_key,
+        attestation_policy,
+        identity_bundle,
+    )
+    .await?;
 
     let request_id = RequestId(1);
     let execute = ClientMessage::Execute {
         request_id,
-        command_id: cli.command_id,
-        args: cli.args,
+        command_id: run_args.command_id.clone(),
+        args: run_args.args.clone(),
     };
-    select! {
-        send_result = send_secure_json(&mut secure, &mut stream, &execute) => send_result?,
-        _ = &mut shutdown => {
-            info!("shutdown signal received before execute request, exiting");
-            return Ok(());
-        }
-    }
+    send_secure_json(&mut secure, &mut connection.stream, &execute).await?;
 
     loop {
-        let message = select! {
-            message_result = recv_secure_json::<_, AgentMessage>(&mut secure, &mut stream) => message_result?,
-            _ = &mut shutdown => {
-                info!("shutdown signal received while waiting for command output, exiting");
-                return Ok(());
-            }
-        };
+        let message =
+            recv_secure_json::<_, AgentMessage>(&mut secure, &mut connection.stream).await?;
 
         match message {
             AgentMessage::Started {
                 request_id: message_request_id,
             } if message_request_id == request_id => {
-                info!("command started (request_id={})", request_id);
+                info!(
+                    "command started (target_agent_id={}, request_id={})",
+                    target_agent_id, request_id
+                );
             }
             AgentMessage::Output {
                 request_id: message_request_id,
                 stream: output_stream,
                 chunk,
-            } if message_request_id == request_id => match output_stream {
-                OutputStream::Stdout => {
-                    print!("{}", chunk);
-                    io::stdout().flush()?;
-                }
-                OutputStream::Stderr => {
-                    eprint!("{}", chunk);
-                    io::stderr().flush()?;
-                }
-            },
+            } if message_request_id == request_id => {
+                print_command_output(target_agent_id, output_stream, &chunk, multi_target)?;
+            }
             AgentMessage::Completed {
                 request_id: message_request_id,
                 exit_code,
@@ -193,8 +262,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 truncated,
             } if message_request_id == request_id => {
                 info!(
-                    "command completed (request_id={}, exit_code={}, timed_out={}, truncated={})",
-                    request_id, exit_code, timed_out, truncated
+                    "command completed (target_agent_id={}, request_id={}, exit_code={}, timed_out={}, truncated={})",
+                    target_agent_id, request_id, exit_code, timed_out, truncated
                 );
                 if let Some(failure_message) =
                     completion_failure_message(exit_code, timed_out, truncated)
@@ -225,19 +294,296 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn print_command_output(
+    target_agent_id: &AgentId,
+    stream: OutputStream,
+    chunk: &str,
+    with_target_prefix: bool,
+) -> Result<(), io::Error> {
+    if !with_target_prefix {
+        match stream {
+            OutputStream::Stdout => {
+                print!("{}", chunk);
+                io::stdout().flush()?;
+            }
+            OutputStream::Stderr => {
+                eprint!("{}", chunk);
+                io::stderr().flush()?;
+            }
+        }
+        return Ok(());
+    }
+
+    let stream_label = match stream {
+        OutputStream::Stdout => "stdout",
+        OutputStream::Stderr => "stderr",
+    };
+
+    for segment in chunk.split_inclusive('\n') {
+        match stream {
+            OutputStream::Stdout => {
+                print!("[{}:{}] {}", target_agent_id, stream_label, segment);
+                io::stdout().flush()?;
+            }
+            OutputStream::Stderr => {
+                eprint!("[{}:{}] {}", target_agent_id, stream_label, segment);
+                io::stderr().flush()?;
+            }
+        }
+    }
+
+    if !chunk.ends_with('\n') {
+        match stream {
+            OutputStream::Stdout => {
+                io::stdout().flush()?;
+            }
+            OutputStream::Stderr => {
+                io::stderr().flush()?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn connect_authenticated(
+    request: &HandshakeRequest,
+    auth_key_id: &str,
+    auth_private_key: &str,
+) -> Result<AuthenticatedConnection, Box<dyn Error>> {
+    let addr = format!("127.0.0.1:{}", DEFAULT_SERVER_PORT);
+    let mut stream = TcpStream::connect(addr).await?;
+    info!("connected to {}", stream.peer_addr()?);
+
+    write_json_frame(&mut stream, request).await?;
+
+    let initial = read_json_frame::<_, HandshakeResponse>(&mut stream).await?;
+    let final_response = match initial {
+        HandshakeResponse::Challenge(challenge) => {
+            let proof =
+                build_auth_proof_ed25519(request, &challenge, auth_key_id, auth_private_key)?;
+            let proof_request = HandshakeProofRequest::new(proof);
+            write_json_frame(&mut stream, &proof_request).await?;
+            read_json_frame::<_, HandshakeResponse>(&mut stream).await?
+        }
+        other => other,
+    };
+
+    match final_response {
+        HandshakeResponse::Accepted(accepted) => {
+            let client_context = match request {
+                HandshakeRequest::Client { client_id, .. } => client_id.to_string(),
+                HandshakeRequest::ClientDiscovery { client_id, .. } => client_id.to_string(),
+                HandshakeRequest::Agent { .. } => "<agent-request>".to_string(),
+            };
+            info!(
+                "handshake accepted (client_id={}, {}, session_id={})",
+                client_context,
+                request_context(request),
+                accepted.session_id
+            );
+            Ok(AuthenticatedConnection {
+                stream,
+                session_id: accepted.session_id,
+            })
+        }
+        HandshakeResponse::Rejected(rejected) => Err(format!(
+            "handshake rejected ({}): {:?}: {}",
+            request_context(request),
+            rejected.code,
+            rejected.message
+        )
+        .into()),
+        HandshakeResponse::Challenge(_) => {
+            Err("unexpected second handshake challenge from server".into())
+        }
+    }
+}
+
+fn load_client_peer_attestation_policy() -> Result<PeerAttestationPolicy, Box<dyn Error>> {
+    let Some(path) = env::var(CLIENT_PEER_ATTESTATION_POLICY_PATH_ENV).ok() else {
+        info!(
+            "{} not set; using default peer attestation policy (default_mode=preferred)",
+            CLIENT_PEER_ATTESTATION_POLICY_PATH_ENV
+        );
+        return Ok(PeerAttestationPolicy::default());
+    };
+
+    let policy = PeerAttestationPolicy::load_from_path(&path)?;
+    info!("loaded peer attestation policy from {}", path);
+    Ok(policy)
+}
+
+fn load_client_identity_bundle() -> Result<Option<IdentityBundle>, Box<dyn Error>> {
+    let configured_identity_bundle_path = env::var(CLIENT_IDENTITY_BUNDLE_PATH_ENV).ok();
+    let identity_bundle_path = configured_identity_bundle_path
+        .clone()
+        .unwrap_or_else(|| DEFAULT_CLIENT_IDENTITY_BUNDLE_PATH.to_string());
+    if configured_identity_bundle_path.is_none() && !Path::new(&identity_bundle_path).exists() {
+        info!(
+            "identity bundle '{}' not found; peer attestation will fall back based on policy",
+            identity_bundle_path
+        );
+        return Ok(None);
+    }
+
+    let trusted_keys_path = env::var(CLIENT_TRUSTED_KEYS_PATH_ENV)
+        .unwrap_or_else(|_| DEFAULT_CLIENT_TRUSTED_KEYS_PATH.to_string());
+    let trusted_keys = TrustedIdentityKeys::load_from_path(&trusted_keys_path)?;
+
+    let identity_bundle = IdentityBundle::load_from_path(&identity_bundle_path, &trusted_keys)?;
+    info!(
+        "loaded client identity bundle from {} (expires_at_unix={})",
+        identity_bundle_path,
+        identity_bundle.expires_at_unix()
+    );
+    Ok(Some(identity_bundle))
+}
+
+async fn perform_peer_attestation(
+    secure: &mut SecureChannel,
+    stream: &mut TcpStream,
+    session_id: &SessionId,
+    client_id: &ClientId,
+    target_agent_id: &AgentId,
+    auth_key_id: &str,
+    auth_private_key: &str,
+    attestation_policy: &PeerAttestationPolicy,
+    identity_bundle: Option<&IdentityBundle>,
+) -> Result<(), Box<dyn Error>> {
+    let mode = attestation_policy.resolve(client_id, target_agent_id);
+    let handshake_hash = secure.handshake_hash();
+    let mut client_proof = None;
+    if mode != PeerAttestationMode::Disabled {
+        match identity_bundle
+            .and_then(|bundle| bundle.agent_identity_key(target_agent_id))
+            .is_some()
+        {
+            true => {
+                client_proof = Some(build_peer_attestation_proof(
+                    session_id,
+                    handshake_hash,
+                    client_id,
+                    target_agent_id,
+                    Role::Client,
+                    auth_key_id,
+                    auth_private_key,
+                )?);
+            }
+            false if mode.requires_attestation() => {
+                return Err(format!(
+                    "peer attestation is required for client '{}' and agent '{}', but the identity bundle is missing key material for target '{}'",
+                    client_id, target_agent_id, target_agent_id
+                )
+                .into());
+            }
+            false => {}
+        }
+    }
+
+    let init = PeerAttestationInit {
+        client_id: client_id.clone(),
+        proof: client_proof,
+    };
+    send_secure_json(secure, stream, &init).await?;
+
+    let result = recv_secure_json::<_, PeerAttestationResult>(secure, stream).await?;
+    if !result.accepted {
+        let message = result
+            .message
+            .unwrap_or_else(|| "peer attestation rejected by agent".to_string());
+        return Err(message.into());
+    }
+
+    let mut verified = false;
+    if let Some(agent_proof) = result.agent_proof {
+        let identity_bundle = identity_bundle.ok_or_else(|| {
+            "agent sent peer attestation proof, but no identity bundle is loaded".to_string()
+        })?;
+        let Some(agent_identity) = identity_bundle.agent_identity_key(target_agent_id) else {
+            return Err(format!(
+                "identity bundle does not contain key material for target agent '{}'",
+                target_agent_id
+            )
+            .into());
+        };
+        verified = verify_peer_attestation_proof(
+            &agent_proof,
+            session_id,
+            handshake_hash,
+            client_id,
+            target_agent_id,
+            Role::Agent,
+            &agent_identity.key_id,
+            agent_identity.public_key,
+        )?;
+        if !verified {
+            return Err(format!(
+                "peer attestation failed while verifying agent '{}'",
+                target_agent_id
+            )
+            .into());
+        }
+    }
+
+    if mode.requires_attestation() && !verified {
+        return Err(format!(
+            "peer attestation is required for client '{}' and agent '{}', but the session was not attested",
+            client_id, target_agent_id
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
 enum CliParseOutcome {
-    Run(CliArgs),
+    Run(CliCommand),
     PrintHelp,
 }
 
 fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<CliParseOutcome, String> {
+    let args = args.into_iter().collect::<Vec<_>>();
+    if args
+        .first()
+        .is_some_and(|value| value == "--help" || value == "-h")
+    {
+        return Ok(CliParseOutcome::PrintHelp);
+    }
+
+    if args.first().is_some_and(|value| value == "list-agents") {
+        if args.len() != 1 {
+            return Err("list-agents does not take additional arguments".to_string());
+        }
+        return Ok(CliParseOutcome::Run(CliCommand::ListAgents));
+    }
+
+    if args.first().is_some_and(|value| value == "run")
+        && args
+            .get(1)
+            .is_some_and(|value| value == "--help" || value == "-h")
+    {
+        return Ok(CliParseOutcome::PrintHelp);
+    }
+
+    let run_args = if args.first().is_some_and(|value| value == "run") {
+        parse_run_args(args.iter().skip(1).cloned())?
+    } else {
+        parse_run_args(args)?
+    };
+
+    Ok(CliParseOutcome::Run(CliCommand::Run(run_args)))
+}
+
+fn parse_run_args(args: impl IntoIterator<Item = String>) -> Result<RunCliArgs, String> {
     let mut command_id = env::var("COMMAND_ID").ok();
     let mut parsed_args = BTreeMap::new();
+    let mut targets = Vec::new();
+    let mut groups = Vec::new();
 
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--help" | "-h" => return Ok(CliParseOutcome::PrintHelp),
             "--command-id" => {
                 let Some(value) = iter.next() else {
                     return Err("--command-id requires a value".to_string());
@@ -262,6 +608,22 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<CliParseOutc
                 }
                 parsed_args.insert(key.to_string(), val.to_string());
             }
+            "--target" => {
+                let Some(value) = iter.next() else {
+                    return Err("--target requires an agent id".to_string());
+                };
+                let target = AgentId::new(value)
+                    .map_err(|err| format!("invalid --target value: {}", err))?;
+                targets.push(target);
+            }
+            "--group" => {
+                let Some(value) = iter.next() else {
+                    return Err("--group requires a group id".to_string());
+                };
+                let group = AgentGroupId::new(value)
+                    .map_err(|err| format!("invalid --group value: {}", err))?;
+                groups.push(group);
+            }
             _ => {
                 return Err(format!("unknown argument '{}'", arg));
             }
@@ -275,22 +637,79 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<CliParseOutc
             err
         )
     })?;
-    Ok(CliParseOutcome::Run(CliArgs {
+    Ok(RunCliArgs {
         command_id,
         args: parsed_args,
-    }))
+        targets,
+        groups,
+    })
 }
 
-fn usage_text() -> &'static str {
+const fn usage_text() -> &'static str {
     "Usage:
-  alaric-client --command-id <id> [--arg name=value]...
+  alaric-client list-agents
+  alaric-client run --command-id <id> [--target <agent_id>]... [--group <group_id>]... [--arg name=value]...
+  alaric-client --command-id <id> [--target <agent_id>]... [--group <group_id>]... [--arg name=value]...
 
 Environment:
-  CLIENT_ID          Optional client id (default: client-<pid>)
-  TARGET_AGENT_ID    Optional target agent id (default: agent-default)
+  CLIENT_ID               Optional client id (default: client-<pid>)
+  TARGET_AGENT_ID         Optional single-target fallback when --target/--group are omitted (default: agent-default)
   CLIENT_AUTH_KEY_ID      Required handshake auth key id for this client id
   CLIENT_AUTH_PRIVATE_KEY Required Ed25519 private key hex for this client id
-  COMMAND_ID         Optional fallback for --command-id"
+  CLIENT_PEER_ATTESTATION_POLICY_PATH Optional peer attestation policy JSON path
+  CLIENT_TRUSTED_KEYS_PATH Optional trusted identity-signing keys path (default: ./policy-keys.json, used when loading identity bundle)
+  CLIENT_IDENTITY_BUNDLE_PATH Optional signed identity bundle path (default: ./identity-bundle.json if present)
+  COMMAND_ID              Optional fallback for --command-id"
+}
+
+fn request_context(request: &HandshakeRequest) -> String {
+    match request {
+        HandshakeRequest::Client {
+            target_agent_id, ..
+        } => format!("target={}", target_agent_id),
+        HandshakeRequest::ClientDiscovery { .. } => "mode=discovery".to_string(),
+        HandshakeRequest::Agent { .. } => "mode=agent".to_string(),
+    }
+}
+
+fn print_discovered_agents(response: &ListAgentsResponse) {
+    if response.agents.is_empty() {
+        println!("no agents discovered");
+    } else {
+        println!("agent_id\tstatus\tstatus_age_secs\tcapabilities\ttags\tdisplay_name");
+        for agent in &response.agents {
+            println!(
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                agent.agent_id,
+                agent.status.as_str(),
+                agent.status_age_secs,
+                agent.capabilities.join(","),
+                agent.tags.join(","),
+                agent.display_name.as_deref().unwrap_or("")
+            );
+        }
+    }
+
+    if response.groups.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("group_id\tmembers\tdisplay_name");
+    for group in &response.groups {
+        let members = group
+            .members
+            .iter()
+            .map(|member| member.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "{}\t{}\t{}",
+            group.group_id,
+            members,
+            group.display_name.as_deref().unwrap_or("")
+        );
+    }
 }
 
 fn completion_failure_message(exit_code: i32, timed_out: bool, truncated: bool) -> Option<String> {
@@ -314,7 +733,7 @@ fn completion_failure_message(exit_code: i32, timed_out: bool, truncated: bool) 
 
 #[cfg(test)]
 mod tests {
-    use super::completion_failure_message;
+    use super::{CliCommand, CliParseOutcome, completion_failure_message, parse_cli_args};
 
     #[test]
     fn completion_success_has_no_failure_message() {
@@ -335,5 +754,50 @@ mod tests {
             completion_failure_message(0, true, true),
             Some("timed_out=true, truncated=true".to_string())
         );
+    }
+
+    #[test]
+    fn parse_list_agents_command() {
+        let parsed = parse_cli_args(["list-agents".to_string()]).expect("list-agents should parse");
+        assert!(matches!(
+            parsed,
+            CliParseOutcome::Run(CliCommand::ListAgents)
+        ));
+    }
+
+    #[test]
+    fn parse_legacy_run_command() {
+        let parsed = parse_cli_args([
+            "--command-id".to_string(),
+            "echo_text".to_string(),
+            "--arg".to_string(),
+            "text=hello".to_string(),
+        ])
+        .expect("legacy run args should parse");
+
+        assert!(matches!(parsed, CliParseOutcome::Run(CliCommand::Run(_))));
+    }
+
+    #[test]
+    fn parse_run_command_with_targets_and_groups() {
+        let parsed = parse_cli_args([
+            "run".to_string(),
+            "--command-id".to_string(),
+            "echo_text".to_string(),
+            "--target".to_string(),
+            "agent-a".to_string(),
+            "--group".to_string(),
+            "ca-west-prod01".to_string(),
+        ])
+        .expect("multi-target run args should parse");
+
+        let CliParseOutcome::Run(CliCommand::Run(run_args)) = parsed else {
+            panic!("unexpected parse outcome");
+        };
+
+        assert_eq!(run_args.targets.len(), 1);
+        assert_eq!(run_args.targets[0].as_str(), "agent-a");
+        assert_eq!(run_args.groups.len(), 1);
+        assert_eq!(run_args.groups[0].as_str(), "ca-west-prod01");
     }
 }

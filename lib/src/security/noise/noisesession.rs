@@ -37,7 +37,8 @@ pub struct NoiseSession {
 }
 impl NoiseSession {
     /// Returns `true` if a handshake has been successfully performed and the session is in transport mode, or false otherwise.
-    pub fn is_transport(&self) -> bool {
+    #[must_use]
+    pub const fn is_transport(&self) -> bool {
         self.is_transport
     }
 
@@ -72,7 +73,8 @@ impl NoiseSession {
     }
 
     /// Returns `h`.
-    pub fn get_handshake_hash(&self) -> Option<[u8; HASHLEN]> {
+    #[must_use]
+    pub const fn get_handshake_hash(&self) -> Option<[u8; HASHLEN]> {
         if self.is_transport {
             return Some(self.h.as_bytes());
         }
@@ -80,19 +82,21 @@ impl NoiseSession {
     }
 
     /// Returns `mc`.
-    pub fn get_message_count(&self) -> u128 {
+    #[must_use]
+    pub const fn get_message_count(&self) -> u128 {
         self.mc
     }
 
     /// Sets the value of the local ephemeral keypair as the parameter `e`.
-    pub fn set_ephemeral_keypair(&mut self, e: Keypair) {
+    pub const fn set_ephemeral_keypair(&mut self, e: Keypair) {
         self.hs.set_ephemeral_keypair(e);
     }
 
     /// Returns a `Option<PublicKey>` object that contains the remote party's static `PublicKey`.
     /// Note that this function returns `None` before a handshake is successfuly performed and
     /// the session is in transport mode.
-    pub fn get_remote_static_public_key(&self) -> Option<PublicKey> {
+    #[must_use]
+    pub const fn get_remote_static_public_key(&self) -> Option<PublicKey> {
         if self.is_transport {
             return Some(self.hs.get_remote_static_public_key());
         }
@@ -103,6 +107,7 @@ impl NoiseSession {
     /// - `initiator`: `bool` variable. To be set as `true` when initiating a handshake with a remote party, or `false` otherwise.
     /// - `prologue`: `Message` object. Could optionally contain the name of the protocol to be used.
     /// - `s`: `Keypair` object. Contains local party's static keypair.
+    #[must_use]
     pub fn init_session(initiator: bool, prologue: &[u8], s: Keypair) -> NoiseSession {
         if initiator {
             NoiseSession {

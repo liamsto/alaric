@@ -1,12 +1,15 @@
 use std::net::SocketAddr;
-use std::{collections::HashMap, error::Error, time::Duration};
+use std::{collections::HashMap, error::Error, sync::Arc, time::Duration};
 
+use alaric_lib::database::Database;
 use alaric_lib::protocol::{
     AgentId, AuthProof, ClientId, HandshakeErrorCode, HandshakeProofRequest, HandshakeRequest,
     HandshakeResponse, PROTOCOL_VERSION, SecureChannel, build_auth_proof_ed25519,
     decode_ed25519_public_key, read_json_frame, write_json_frame,
 };
 use alaric_lib::security::noise::types::Keypair;
+use alaric_server::connection::handle_connection;
+use alaric_server::state::ServerState;
 use alaric_server::{HandshakeAuthenticator, IdentityPublicKey};
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -104,8 +107,18 @@ async fn spawn_server(
 ) -> Result<(SocketAddr, JoinHandle<()>), Box<dyn Error>> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
+    let database = Arc::new(Database::from_env().await?);
+    let state = ServerState::new(authenticator, database);
     let task = tokio::spawn(async move {
-        let _ = alaric_server::run_with_auth(listener, authenticator).await;
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            let state = state.clone();
+            tokio::spawn(async move {
+                let _ = handle_connection(stream, state).await;
+            });
+        }
     });
     Ok((addr, task))
 }
