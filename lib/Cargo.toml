@@ -16,6 +16,6 @@ rand = "0.10.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 sqlx = { version = "0.8.6", features = ["runtime-tokio", "tls-native-tls", "postgres", "migrate", "macros", "uuid", "json", "chrono", "ipnetwork"], default-features = false }
-tokio = { version = "1.51.0", features = ["io-util"] }
+tokio = { version = "1.51.1", features = ["io-util"] }
 uuid = { version = "1.21.0", features = ["serde", "v4"] }
 zeroize = "1.8.2"
