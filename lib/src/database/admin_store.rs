@@ -76,7 +76,7 @@ pub enum PrincipalDisableOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrincipalAttestationSetOutcome {
+pub enum AttestationSetOutcome {
     Updated,
     NotFound,
 }
@@ -103,19 +103,19 @@ pub struct KeyRotateOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentGroupUpsertOutcome {
+pub enum GroupUpsertOutcome {
     Created,
     Updated,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentGroupCreateOutcome {
+pub enum GroupCreateOutcome {
     Created,
     AlreadyExists,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentGroupMemberAddOutcome {
+pub enum GroupAddOutcome {
     Added,
     AlreadyMember,
     GroupNotFound,
@@ -123,7 +123,7 @@ pub enum AgentGroupMemberAddOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentGroupMemberRemoveOutcome {
+pub enum GroupRemoveOutcome {
     Removed,
     NotMember,
     GroupNotFound,
@@ -131,7 +131,7 @@ pub enum AgentGroupMemberRemoveOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentGroupMoveOutcome {
+pub enum GroupMoveOutcome {
     Moved {
         removed_from_old_group: bool,
         added_to_new_group: bool,
@@ -143,13 +143,13 @@ pub enum AgentGroupMoveOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentGroupSetNameOutcome {
+pub enum GroupSetNameOutcome {
     Updated,
     GroupNotFound,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentGroupDeleteOutcome {
+pub enum GroupDeleteOutcome {
     Deleted,
     NotFound,
 }
@@ -206,7 +206,7 @@ impl Database {
         &self,
         group_id: &str,
         display_name: Option<&str>,
-    ) -> Result<AgentGroupCreateOutcome, AdminStoreError> {
+    ) -> Result<GroupCreateOutcome, AdminStoreError> {
         validate_group_id(group_id)?;
 
         let result = sqlx::query(
@@ -222,9 +222,9 @@ impl Database {
         .await?;
 
         if result.rows_affected() == 0 {
-            Ok(AgentGroupCreateOutcome::AlreadyExists)
+            Ok(GroupCreateOutcome::AlreadyExists)
         } else {
-            Ok(AgentGroupCreateOutcome::Created)
+            Ok(GroupCreateOutcome::Created)
         }
     }
 
@@ -232,7 +232,7 @@ impl Database {
         &self,
         group_id: &str,
         agent_id: &str,
-    ) -> Result<AgentGroupMemberAddOutcome, AdminStoreError> {
+    ) -> Result<GroupAddOutcome, AdminStoreError> {
         validate_group_id(group_id)?;
         AgentId::new(agent_id)
             .map_err(|err| AdminStoreError::InvalidPrincipalId(err.to_string()))?;
@@ -240,17 +240,17 @@ impl Database {
         let mut tx = self.pool().begin().await?;
         let Some(group) = find_agent_group_state(&mut *tx, group_id).await? else {
             tx.commit().await?;
-            return Ok(AgentGroupMemberAddOutcome::GroupNotFound);
+            return Ok(GroupAddOutcome::GroupNotFound);
         };
 
         let Some(agent) = find_principal_state(&mut *tx, PrincipalKind::Agent, agent_id).await?
         else {
             tx.commit().await?;
-            return Ok(AgentGroupMemberAddOutcome::AgentNotFound);
+            return Ok(GroupAddOutcome::AgentNotFound);
         };
         if agent.disabled_at.is_some() {
             tx.commit().await?;
-            return Ok(AgentGroupMemberAddOutcome::AgentNotFound);
+            return Ok(GroupAddOutcome::AgentNotFound);
         }
 
         let insert_result = sqlx::query(
@@ -267,9 +267,9 @@ impl Database {
 
         tx.commit().await?;
         if insert_result.rows_affected() == 0 {
-            Ok(AgentGroupMemberAddOutcome::AlreadyMember)
+            Ok(GroupAddOutcome::AlreadyMember)
         } else {
-            Ok(AgentGroupMemberAddOutcome::Added)
+            Ok(GroupAddOutcome::Added)
         }
     }
 
@@ -277,7 +277,7 @@ impl Database {
         &self,
         group_id: &str,
         agent_id: &str,
-    ) -> Result<AgentGroupMemberRemoveOutcome, AdminStoreError> {
+    ) -> Result<GroupRemoveOutcome, AdminStoreError> {
         validate_group_id(group_id)?;
         AgentId::new(agent_id)
             .map_err(|err| AdminStoreError::InvalidPrincipalId(err.to_string()))?;
@@ -285,17 +285,17 @@ impl Database {
         let mut tx = self.pool().begin().await?;
         let Some(group) = find_agent_group_state(&mut *tx, group_id).await? else {
             tx.commit().await?;
-            return Ok(AgentGroupMemberRemoveOutcome::GroupNotFound);
+            return Ok(GroupRemoveOutcome::GroupNotFound);
         };
 
         let Some(agent) = find_principal_state(&mut *tx, PrincipalKind::Agent, agent_id).await?
         else {
             tx.commit().await?;
-            return Ok(AgentGroupMemberRemoveOutcome::AgentNotFound);
+            return Ok(GroupRemoveOutcome::AgentNotFound);
         };
         if agent.disabled_at.is_some() {
             tx.commit().await?;
-            return Ok(AgentGroupMemberRemoveOutcome::AgentNotFound);
+            return Ok(GroupRemoveOutcome::AgentNotFound);
         }
 
         let delete_result = sqlx::query(
@@ -312,9 +312,9 @@ impl Database {
 
         tx.commit().await?;
         if delete_result.rows_affected() == 0 {
-            Ok(AgentGroupMemberRemoveOutcome::NotMember)
+            Ok(GroupRemoveOutcome::NotMember)
         } else {
-            Ok(AgentGroupMemberRemoveOutcome::Removed)
+            Ok(GroupRemoveOutcome::Removed)
         }
     }
 
@@ -323,34 +323,34 @@ impl Database {
         old_group_id: &str,
         new_group_id: &str,
         agent_id: &str,
-    ) -> Result<AgentGroupMoveOutcome, AdminStoreError> {
+    ) -> Result<GroupMoveOutcome, AdminStoreError> {
         validate_group_id(old_group_id)?;
         validate_group_id(new_group_id)?;
         AgentId::new(agent_id)
             .map_err(|err| AdminStoreError::InvalidPrincipalId(err.to_string()))?;
 
         if old_group_id == new_group_id {
-            return Ok(AgentGroupMoveOutcome::SameGroup);
+            return Ok(GroupMoveOutcome::SameGroup);
         }
 
         let mut tx = self.pool().begin().await?;
         let Some(old_group) = find_agent_group_state(&mut *tx, old_group_id).await? else {
             tx.commit().await?;
-            return Ok(AgentGroupMoveOutcome::SourceGroupNotFound);
+            return Ok(GroupMoveOutcome::SourceGroupNotFound);
         };
         let Some(new_group) = find_agent_group_state(&mut *tx, new_group_id).await? else {
             tx.commit().await?;
-            return Ok(AgentGroupMoveOutcome::DestinationGroupNotFound);
+            return Ok(GroupMoveOutcome::DestinationGroupNotFound);
         };
 
         let Some(agent) = find_principal_state(&mut *tx, PrincipalKind::Agent, agent_id).await?
         else {
             tx.commit().await?;
-            return Ok(AgentGroupMoveOutcome::AgentNotFound);
+            return Ok(GroupMoveOutcome::AgentNotFound);
         };
         if agent.disabled_at.is_some() {
             tx.commit().await?;
-            return Ok(AgentGroupMoveOutcome::AgentNotFound);
+            return Ok(GroupMoveOutcome::AgentNotFound);
         }
 
         let removed_from_old_group = sqlx::query(
@@ -382,7 +382,7 @@ impl Database {
             != 0;
 
         tx.commit().await?;
-        Ok(AgentGroupMoveOutcome::Moved {
+        Ok(GroupMoveOutcome::Moved {
             removed_from_old_group,
             added_to_new_group,
         })
@@ -392,7 +392,7 @@ impl Database {
         &self,
         group_id: &str,
         display_name: &str,
-    ) -> Result<AgentGroupSetNameOutcome, AdminStoreError> {
+    ) -> Result<GroupSetNameOutcome, AdminStoreError> {
         validate_group_id(group_id)?;
 
         let result = sqlx::query(
@@ -408,9 +408,9 @@ impl Database {
         .await?;
 
         if result.rows_affected() == 0 {
-            Ok(AgentGroupSetNameOutcome::GroupNotFound)
+            Ok(GroupSetNameOutcome::GroupNotFound)
         } else {
-            Ok(AgentGroupSetNameOutcome::Updated)
+            Ok(GroupSetNameOutcome::Updated)
         }
     }
 
@@ -519,7 +519,7 @@ impl Database {
         kind: PrincipalKind,
         external_id: &str,
         attestation_mode: PeerAttestationMode,
-    ) -> Result<PrincipalAttestationSetOutcome, AdminStoreError> {
+    ) -> Result<AttestationSetOutcome, AdminStoreError> {
         validate_principal_id(kind, external_id)?;
 
         let result = sqlx::query(
@@ -537,9 +537,9 @@ impl Database {
         .await?;
 
         if result.rows_affected() == 0 {
-            Ok(PrincipalAttestationSetOutcome::NotFound)
+            Ok(AttestationSetOutcome::NotFound)
         } else {
-            Ok(PrincipalAttestationSetOutcome::Updated)
+            Ok(AttestationSetOutcome::Updated)
         }
     }
 
@@ -824,7 +824,7 @@ impl Database {
         group_id: &str,
         display_name: Option<&str>,
         member_agent_ids: &[String],
-    ) -> Result<AgentGroupUpsertOutcome, AdminStoreError> {
+    ) -> Result<GroupUpsertOutcome, AdminStoreError> {
         validate_group_id(group_id)?;
 
         let mut deduped_members = BTreeSet::new();
@@ -852,7 +852,7 @@ impl Database {
                 .execute(&mut *tx)
                 .await?;
             }
-            (existing.id, AgentGroupUpsertOutcome::Updated)
+            (existing.id, GroupUpsertOutcome::Updated)
         } else {
             let row = sqlx::query_as::<_, AgentGroupStateRow>(
                 r#"
@@ -865,7 +865,7 @@ impl Database {
             .bind(display_name)
             .fetch_one(&mut *tx)
             .await?;
-            (row.id, AgentGroupUpsertOutcome::Created)
+            (row.id, GroupUpsertOutcome::Created)
         };
 
         let resolved_member_rows = if member_agent_ids.is_empty() {
@@ -929,7 +929,7 @@ impl Database {
     pub async fn admin_delete_agent_group(
         &self,
         group_id: &str,
-    ) -> Result<AgentGroupDeleteOutcome, AdminStoreError> {
+    ) -> Result<GroupDeleteOutcome, AdminStoreError> {
         validate_group_id(group_id)?;
 
         let result = sqlx::query(
@@ -943,9 +943,9 @@ impl Database {
         .await?;
 
         if result.rows_affected() == 0 {
-            Ok(AgentGroupDeleteOutcome::NotFound)
+            Ok(GroupDeleteOutcome::NotFound)
         } else {
-            Ok(AgentGroupDeleteOutcome::Deleted)
+            Ok(GroupDeleteOutcome::Deleted)
         }
     }
 
