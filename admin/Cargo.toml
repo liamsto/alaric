@@ -23,4 +23,5 @@ cargo_common_metadata = "warn"
 
 [dependencies]
 alaric-lib = { path = "../lib" }
-tokio = { version = "1.51.0", features = ["rt-multi-thread", "macros"] }
+clap = { version = "4.6.0", features = ["derive"] }
+tokio = { version = "1.51.1", features = ["rt-multi-thread", "macros"] }
