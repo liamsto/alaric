@@ -1,9 +1,7 @@
 use crate::signal::shutdown_signal;
 use alaric_lib::constants::DEFAULT_SERVER_PORT;
 use alaric_lib::database::Database;
-use alaric_server::HandshakeAuthenticator;
-use alaric_server::connection::handle_connection;
-use alaric_server::state::ServerState;
+use alaric_server::{HandshakeAuthenticator, connection::handle_connection, state::ServerState};
 use std::error::Error;
 use std::sync::Arc;
 use tokio::{net::TcpListener, time::Duration};
