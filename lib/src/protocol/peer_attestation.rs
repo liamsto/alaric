@@ -39,7 +39,11 @@ pub struct PeerAttestationResult {
 }
 
 impl PeerAttestationResult {
-    pub fn accepted(mode: PeerAttestationMode, agent_proof: Option<PeerAttestationProof>) -> Self {
+    #[must_use]
+    pub const fn accepted(
+        mode: PeerAttestationMode,
+        agent_proof: Option<PeerAttestationProof>,
+    ) -> Self {
         Self {
             accepted: true,
             mode,

@@ -3,8 +3,23 @@ name = "aadmin"
 version = "0.1.0"
 edition.workspace = true
 
-[lints]
-workspace = true
+# Define a separate lint table here, since we expect to use stdout for CLI
+[lints.clippy]
+missing_panics_doc = "warn"
+missing_errors_doc = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+missing_const_for_fn = "warn"
+must_use_candidate = "warn"
+return_self_not_must_use = "warn"
+dbg_macro = "warn"
+print_stderr = "warn"
+wildcard_imports = "warn"
+empty_structs_with_brackets = "warn"
+cargo_common_metadata = "warn"
 
 [dependencies]
 alaric-lib = { path = "../lib" }

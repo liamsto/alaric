@@ -31,7 +31,7 @@ impl CipherState {
         self.n = Nonce::new();
     }
 
-    pub(crate) fn from_key(key: Key) -> Self {
+    pub(crate) const fn from_key(key: Key) -> Self {
         let nonce: Nonce = Nonce::new();
         Self { k: key, n: nonce }
     }
@@ -41,12 +41,12 @@ impl CipherState {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn set_nonce(&mut self, n: Nonce) {
+    pub(crate) const fn set_nonce(&mut self, n: Nonce) {
         self.n = n;
     }
 
     #[allow(dead_code)]
-    pub(crate) fn get_nonce(&self) -> Nonce {
+    pub(crate) const fn get_nonce(&self) -> Nonce {
         self.n
     }
 
@@ -263,11 +263,11 @@ impl HandshakeState {
         self.psk.clear();
     }
 
-    pub fn get_remote_static_public_key(&self) -> PublicKey {
+    pub const fn get_remote_static_public_key(&self) -> PublicKey {
         self.rs
     }
 
-    pub(crate) fn set_ephemeral_keypair(&mut self, e: Keypair) {
+    pub(crate) const fn set_ephemeral_keypair(&mut self, e: Keypair) {
         self.e = e;
     }
 

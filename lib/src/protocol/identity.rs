@@ -232,15 +232,18 @@ impl IdentityBundle {
         })
     }
 
+    #[must_use]
     pub fn agent_identity_key(&self, agent_id: &AgentId) -> Option<&IdentityPublicKey> {
         self.agents.get(agent_id)
     }
 
+    #[must_use]
     pub fn client_identity_key(&self, client_id: &ClientId) -> Option<&IdentityPublicKey> {
         self.clients.get(client_id)
     }
 
-    pub fn expires_at_unix(&self) -> u64 {
+    #[must_use]
+    pub const fn expires_at_unix(&self) -> u64 {
         self.expires_at_unix
     }
 }

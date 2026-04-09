@@ -833,7 +833,7 @@ const fn attestation_mode_name(mode: PeerAttestationMode) -> &'static str {
     }
 }
 
-fn usage_text() -> &'static str {
+const fn usage_text() -> &'static str {
     "Usage:
   aadmin principal add <agent|client> <external_id> [--display-name <name>] [--attestation <required|preferred|disabled>]
   aadmin principal set-attestation <agent|client> <external_id> <required|preferred|disabled>

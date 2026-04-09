@@ -302,20 +302,24 @@ impl Policy {
         Ok(())
     }
 
+    #[must_use]
     pub fn command_by_id(&self, id: &str) -> Option<&CommandSpec> {
         self.commands.iter().find(|command| command.id == id)
     }
 }
 
 impl CommandSpec {
+    #[must_use]
     pub fn effective_timeout_secs(&self, policy_default: u64) -> u64 {
         self.timeout_secs.unwrap_or(policy_default)
     }
 
+    #[must_use]
     pub fn effective_max_output_bytes(&self, policy_default: usize) -> usize {
         self.max_output_bytes.unwrap_or(policy_default)
     }
 
+    #[must_use]
     pub fn arg_spec(&self, name: &str) -> Option<&ArgSpec> {
         self.arg_specs.iter().find(|arg| arg.name == name)
     }

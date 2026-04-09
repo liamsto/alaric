@@ -645,7 +645,7 @@ fn parse_run_args(args: impl IntoIterator<Item = String>) -> Result<RunCliArgs, 
     })
 }
 
-fn usage_text() -> &'static str {
+const fn usage_text() -> &'static str {
     "Usage:
   alaric-client list-agents
   alaric-client run --command-id <id> [--target <agent_id>]... [--group <group_id>]... [--arg name=value]...

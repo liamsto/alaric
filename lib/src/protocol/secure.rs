@@ -165,13 +165,14 @@ impl SecureChannel {
         Ok(in_out)
     }
 
+    #[must_use]
     pub fn handshake_hash(&self) -> [u8; 32] {
         self.session
             .get_handshake_hash()
             .expect("handshake hash should always be available in transport mode")
     }
 
-    fn from_transport_session(session: NoiseSession) -> Result<Self, SecureChannelError> {
+    const fn from_transport_session(session: NoiseSession) -> Result<Self, SecureChannelError> {
         if !session.is_transport() {
             return Err(SecureChannelError::HandshakeIncomplete);
         }
@@ -180,7 +181,7 @@ impl SecureChannel {
     }
 }
 
-fn validate_handshake_len(
+const fn validate_handshake_len(
     step: &'static str,
     frame: &[u8],
     expected: usize,

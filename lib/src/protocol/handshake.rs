@@ -17,7 +17,8 @@ pub enum Role {
 }
 
 impl Role {
-    pub fn as_str(self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Role::Agent => "agent",
             Role::Client => "client",
@@ -53,7 +54,8 @@ pub enum HandshakeRequest {
 }
 
 impl HandshakeRequest {
-    pub fn agent(agent_id: AgentId) -> Self {
+    #[must_use]
+    pub const fn agent(agent_id: AgentId) -> Self {
         Self::Agent {
             protocol_version: PROTOCOL_VERSION,
             agent_id,
@@ -61,7 +63,8 @@ impl HandshakeRequest {
         }
     }
 
-    pub fn client(client_id: ClientId, target_agent_id: AgentId) -> Self {
+    #[must_use]
+    pub const fn client(client_id: ClientId, target_agent_id: AgentId) -> Self {
         Self::Client {
             protocol_version: PROTOCOL_VERSION,
             client_id,
@@ -70,7 +73,8 @@ impl HandshakeRequest {
         }
     }
 
-    pub fn client_discovery(client_id: ClientId) -> Self {
+    #[must_use]
+    pub const fn client_discovery(client_id: ClientId) -> Self {
         Self::ClientDiscovery {
             protocol_version: PROTOCOL_VERSION,
             client_id,
@@ -78,7 +82,8 @@ impl HandshakeRequest {
         }
     }
 
-    pub fn protocol_version(&self) -> u16 {
+    #[must_use]
+    pub const fn protocol_version(&self) -> u16 {
         match self {
             HandshakeRequest::Agent {
                 protocol_version, ..
@@ -92,7 +97,8 @@ impl HandshakeRequest {
         }
     }
 
-    pub fn role(&self) -> Role {
+    #[must_use]
+    pub const fn role(&self) -> Role {
         match self {
             HandshakeRequest::Agent { .. } => Role::Agent,
             HandshakeRequest::Client { .. } => Role::Client,
@@ -125,7 +131,8 @@ pub struct HandshakeProofRequest {
 }
 
 impl HandshakeProofRequest {
-    pub fn new(proof: AuthProof) -> Self {
+    #[must_use]
+    pub const fn new(proof: AuthProof) -> Self {
         Self {
             protocol_version: PROTOCOL_VERSION,
             proof,

@@ -32,13 +32,13 @@ impl Hash {
     pub(crate) fn clear(&mut self) {
         self.h.zeroize();
     }
-    pub(crate) fn from_bytes(hash: [u8; HASHLEN]) -> Self {
+    pub(crate) const fn from_bytes(hash: [u8; HASHLEN]) -> Self {
         Self { h: hash }
     }
-    pub(crate) fn as_bytes(&self) -> [u8; DHLEN] {
+    pub(crate) const fn as_bytes(&self) -> [u8; DHLEN] {
         self.h
     }
-    pub(crate) fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self::from_bytes([0_u8; HASHLEN])
     }
 }
@@ -52,14 +52,16 @@ impl Key {
         self.k.zeroize();
     }
     /// Instanciates a new empty `Key`.
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self::from_bytes(EMPTY_KEY)
     }
     /// Instanciates a new `Key` from an array of `DHLEN` bytes.
-    pub fn from_bytes(key: [u8; DHLEN]) -> Self {
+    #[must_use]
+    pub const fn from_bytes(key: [u8; DHLEN]) -> Self {
         Self { k: key }
     }
-    pub(crate) fn as_bytes(&self) -> [u8; DHLEN] {
+    pub(crate) const fn as_bytes(&self) -> [u8; DHLEN] {
         self.k
     }
     /// Checks whether a `Key` object is empty or not.
@@ -84,10 +86,12 @@ impl Key {
     /// #   try_main().unwrap();
     /// # }
     /// ```
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         constant_time_eq(&self.k[..], &EMPTY_KEY)
     }
     /// Derives a `PublicKey` from the `Key` and returns it.
+    #[must_use]
     pub fn generate_public_key(private_key: &[u8; DHLEN]) -> PublicKey {
         let mut output: [u8; DHLEN] = EMPTY_KEY;
         output.copy_from_slice(private_key);
@@ -125,19 +129,21 @@ pub struct Psk {
 }
 impl Psk {
     /// Instanciates a new empty `Psk`.
-    pub fn default_psk() -> Self {
+    #[must_use]
+    pub const fn default_psk() -> Self {
         Self::from_bytes(EMPTY_KEY)
     }
     pub(crate) fn clear(&mut self) {
         self.psk.zeroize();
     }
     /// Instanciates a new `Psk` from an array of `DHLEN` bytes.
-    pub fn from_bytes(k: [u8; DHLEN]) -> Self {
+    #[must_use]
+    pub const fn from_bytes(k: [u8; DHLEN]) -> Self {
         Self { psk: k }
     }
 
     #[allow(dead_code)]
-    pub(crate) fn as_bytes(&self) -> [u8; DHLEN] {
+    pub(crate) const fn as_bytes(&self) -> [u8; DHLEN] {
         self.psk
     }
     /// Checks whether a `Psk` object is empty or not.
@@ -162,6 +168,7 @@ impl Psk {
     /// #   try_main().unwrap();
     /// # }
     /// ```
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         constant_time_eq(&self.psk[..], &EMPTY_KEY)
     }
@@ -208,17 +215,19 @@ impl PrivateKey {
         self.k.zeroize();
     }
     /// Instanciates a new empty `PrivateKey`.
-    pub fn empty() -> Self {
+    #[must_use]
+    pub const fn empty() -> Self {
         Self { k: EMPTY_KEY }
     }
     /// Instanciates a new `PrivateKey` from an array of `DHLEN` bytes.
-    pub fn from_bytes(k: [u8; DHLEN]) -> Self {
+    #[must_use]
+    pub const fn from_bytes(k: [u8; DHLEN]) -> Self {
         Self::from_hacl_secret_key(curve25519::SecretKey(k))
     }
-    pub(crate) fn from_hacl_secret_key(hacl_secret: curve25519::SecretKey) -> Self {
+    pub(crate) const fn from_hacl_secret_key(hacl_secret: curve25519::SecretKey) -> Self {
         Self { k: hacl_secret.0 }
     }
-    pub(crate) fn as_bytes(&self) -> [u8; DHLEN] {
+    pub(crate) const fn as_bytes(&self) -> [u8; DHLEN] {
         self.k
     }
     /// Checks whether a `PrivateKey` object is empty or not.
@@ -243,6 +252,7 @@ impl PrivateKey {
     /// #   try_main().unwrap();
     /// # }
     /// ```
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         constant_time_eq(&self.k[..], &EMPTY_KEY)
     }
@@ -288,7 +298,8 @@ pub struct PublicKey {
 }
 impl PublicKey {
     /// Instanciates a new empty `PublicKey`.
-    pub fn empty() -> Self {
+    #[must_use]
+    pub const fn empty() -> Self {
         Self { k: EMPTY_KEY }
     }
     /// Instanciates a new `PublicKey` from an array of `DHLEN` bytes.
@@ -304,10 +315,11 @@ impl PublicKey {
     pub(crate) fn clear(&mut self) {
         self.k.zeroize();
     }
-    pub(crate) fn from_hacl_public_key(hacl_public: curve25519::PublicKey) -> Self {
+    pub(crate) const fn from_hacl_public_key(hacl_public: curve25519::PublicKey) -> Self {
         Self { k: hacl_public.0 }
     }
-    pub fn as_bytes(&self) -> [u8; DHLEN] {
+    #[must_use]
+    pub const fn as_bytes(&self) -> [u8; DHLEN] {
         self.k
     }
     /// Checks whether a `PublicKey` object is empty or not.
@@ -330,6 +342,7 @@ impl PublicKey {
     /// #   try_main().unwrap();
     /// # }
     /// ```
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         constant_time_eq(&self.k[..], &EMPTY_KEY)
     }
@@ -366,13 +379,13 @@ pub(crate) struct Nonce {
     n: u64,
 }
 impl Nonce {
-    pub(crate) fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self { n: 0_u64 }
     }
-    pub(crate) fn increment(&mut self) {
+    pub(crate) const fn increment(&mut self) {
         self.n += 1;
     }
-    pub(crate) fn get_value(self) -> Result<u64, NoiseError> {
+    pub(crate) const fn get_value(self) -> Result<u64, NoiseError> {
         if self.n == MAX_NONCE {
             return Err(NoiseError::ExhaustedNonceError);
         }
@@ -390,7 +403,8 @@ impl Keypair {
         self.public_key.clear();
     }
     /// Instanciates a `Keypair` where the `PrivateKey` and `PublicKey` fields are filled with 0 bytes.
-    pub fn new_empty() -> Self {
+    #[must_use]
+    pub const fn new_empty() -> Self {
         Self {
             private_key: PrivateKey::empty(),
             public_key: PublicKey::empty(),
@@ -398,6 +412,7 @@ impl Keypair {
     }
     /// Instanciates a `Keypair` by generating a random `PrivateKey` and deriving
     /// the corresponding `PublicKey`.
+    #[must_use]
     pub fn default_keypair() -> Self {
         let secret_bytes: [u8; DHLEN] = rand::random();
         let secret = curve25519::SecretKey(secret_bytes);
@@ -413,6 +428,7 @@ impl Keypair {
         output
     }
     /// Checks if the `PrivateKey` field of a `Keypair` is empty and returns either `true` or `false` accordingly.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.private_key.is_empty()
     }
@@ -431,7 +447,8 @@ impl Keypair {
         Self::from_key(k)
     }
     /// Returns the `PublicKey` value from the `Keypair`
-    pub fn get_public_key(&self) -> PublicKey {
+    #[must_use]
+    pub const fn get_public_key(&self) -> PublicKey {
         self.public_key
     }
 }

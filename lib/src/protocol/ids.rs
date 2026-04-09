@@ -65,6 +65,7 @@ impl AgentId {
         Ok(Self(value))
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -105,6 +106,7 @@ impl AgentGroupId {
         Ok(Self(value))
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -145,6 +147,7 @@ impl ClientId {
         Ok(Self(value))
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -182,6 +185,7 @@ pub struct SessionId(Uuid);
 pub struct SessionIdError(String);
 
 impl SessionId {
+    #[must_use]
     pub fn new_random() -> Self {
         let mut bytes = random::<[u8; 16]>();
         // RFC 4122 v4 UUID layout.
@@ -190,7 +194,8 @@ impl SessionId {
         Self(Uuid::from_bytes(bytes))
     }
 
-    pub fn as_uuid(self) -> Uuid {
+    #[must_use]
+    pub const fn as_uuid(self) -> Uuid {
         self.0
     }
 }

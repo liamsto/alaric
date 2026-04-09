@@ -36,6 +36,7 @@ impl ServerState {
         }
     }
 
+    #[must_use]
     pub fn next_session_id(&self) -> SessionId {
         SessionId::new_random()
     }

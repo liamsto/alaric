@@ -64,6 +64,7 @@ impl LogRetentionDays {
         Ok(Self(days))
     }
 
+    #[must_use]
     pub const fn get(self) -> u16 {
         self.0
     }
@@ -154,11 +155,13 @@ impl Database {
         MIGRATOR.run(&self.pool).await
     }
 
-    pub fn pool(&self) -> &PgPool {
+    #[must_use]
+    pub const fn pool(&self) -> &PgPool {
         &self.pool
     }
 
-    pub fn log_retention_days(&self) -> LogRetentionDays {
+    #[must_use]
+    pub const fn log_retention_days(&self) -> LogRetentionDays {
         self.log_retention_days
     }
 

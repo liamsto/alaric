@@ -10,6 +10,7 @@ pub enum AgentPresenceStatus {
 }
 
 impl AgentPresenceStatus {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Online => "online",
@@ -45,7 +46,8 @@ pub struct ListAgentsResponse {
 }
 
 impl ListAgentsResponse {
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         generated_at_unix: u64,
         agents: Vec<AgentDiscoveryEntry>,
         groups: Vec<AgentGroupDiscoveryEntry>,

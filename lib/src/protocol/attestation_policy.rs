@@ -20,10 +20,12 @@ pub enum PeerAttestationMode {
 }
 
 impl PeerAttestationMode {
+    #[must_use]
     pub const fn requires_attestation(self) -> bool {
         matches!(self, Self::Required)
     }
 
+    #[must_use]
     pub const fn strictest(self, other: Self) -> Self {
         if self.rank() >= other.rank() {
             self
@@ -170,10 +172,12 @@ impl PeerAttestationPolicy {
         })
     }
 
+    #[must_use]
     pub const fn default_mode(&self) -> PeerAttestationMode {
         self.default_mode
     }
 
+    #[must_use]
     pub fn resolve(&self, client_id: &ClientId, agent_id: &AgentId) -> PeerAttestationMode {
         if let Some(mode) = self.pair_modes.get(&(client_id.clone(), agent_id.clone())) {
             return *mode;
