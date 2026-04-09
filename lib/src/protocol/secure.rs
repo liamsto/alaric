@@ -166,7 +166,7 @@ impl SecureChannel {
     }
 
     #[must_use]
-    pub fn handshake_hash(&self) -> [u8; 32] {
+    pub const fn handshake_hash(&self) -> [u8; 32] {
         self.session
             .get_handshake_hash()
             .expect("handshake hash should always be available in transport mode")

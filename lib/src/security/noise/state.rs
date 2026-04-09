@@ -18,7 +18,7 @@ pub(crate) struct CipherState {
 }
 
 impl CipherState {
-    pub(crate) fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self::from_key(Key::new())
     }
 
