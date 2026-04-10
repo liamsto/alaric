@@ -41,7 +41,10 @@ pub(super) struct RunCommand {
     groups: Vec<String>,
 }
 
-pub(super) async fn run_cmd(auth: &session::ClientAuth, command: RunCommand) -> Result<(), DynError> {
+pub(super) async fn run_cmd(
+    auth: &session::ClientAuth,
+    command: RunCommand,
+) -> Result<(), DynError> {
     let command_id = resolve_command_id(command.command_id)?;
     let args = command.args.into_iter().collect::<BTreeMap<_, _>>();
 
